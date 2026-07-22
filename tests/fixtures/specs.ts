@@ -10,8 +10,15 @@ import {
   BuilderIntentDraftSchema,
   type BuilderIntentDraft,
 } from "../../src/schema/builder-intent-draft.js";
-import { BudgetSchema, SpecIdSchema, type Budget, type SpecId } from "../../src/schema/common.js";
+import {
+  BudgetSchema,
+  SpecIdSchema,
+  type Budget,
+  type SpecId,
+  type ToolId,
+} from "../../src/schema/common.js";
 import { TrustDomainSchema, type TrustDomain } from "../../src/schema/trust-domain.js";
+import type { EvaluationOutcome } from "../../src/harness/harness-types.js";
 
 // --- AgentSpecContent: a valid parent spec plus reduced/expanding children ---
 
@@ -230,12 +237,15 @@ export const overBudget: Budget = BudgetSchema.parse({
 
 // --- Spec Assembler fixtures: role resolution across a small approved-specs set ---
 
+// Extended from the assembler-era empty arrays: assembler tests only ever
+// check `trustDomains.some(d => d.domainId === ...)`, never these two
+// fields, so widening them here cannot break any existing assembler test.
 export const domainSales: TrustDomain = TrustDomainSchema.parse({
   domainId: "domain-sales",
   owner: "sales-platform-team",
   allowedDataClasses: [],
-  allowedToolClasses: [],
-  allowedAgentRoles: [],
+  allowedToolClasses: ["crm.enrich"],
+  allowedAgentRoles: ["crm-enrichment", "crm-lead-scoring"],
   crossDomainRules: [],
 });
 
@@ -271,3 +281,49 @@ export const rivalWebSearchAgent: AgentSpecContent = AgentSpecContentSchema.pars
   declaredRoles: ["web-search-agent"],
   declaredAgentCalls: [],
 });
+
+// --- Policy/Evaluation Harness fixtures (Step 4) ---
+
+export const toolNotAllowedChildSpecContent: AgentSpecContent = AgentSpecContentSchema.parse({
+  ...validAgentSpecContentRaw,
+  version: "1.1.0-tool-not-allowed",
+  parentVersion: "1.0.0",
+  contentHash: "hash-v1.1-tool-not-allowed",
+  declaredTools: [
+    ...validAgentSpecContentRaw.declaredTools,
+    { toolId: "email.send", scope: "tenant:acme:crm", params: {} },
+  ],
+});
+
+export const roleNotAllowedChildSpecContent: AgentSpecContent = AgentSpecContentSchema.parse({
+  ...validAgentSpecContentRaw,
+  version: "1.1.0-role-not-allowed",
+  parentVersion: "1.0.0",
+  contentHash: "hash-v1.1-role-not-allowed",
+  declaredRoles: [...validAgentSpecContentRaw.declaredRoles, "unlisted-role"],
+});
+
+// Triggers a domain violation (fs.read/email.send not in domainSales'
+// allowedToolClasses) AND a forbidden combination (fs.read + email.send)
+// simultaneously — proves evaluatePolicy collects reasons from independent
+// checks rather than stopping at the first.
+export const doubleViolationChildSpecContent: AgentSpecContent = AgentSpecContentSchema.parse({
+  ...validAgentSpecContentRaw,
+  version: "1.1.0-double-violation",
+  parentVersion: "1.0.0",
+  contentHash: "hash-v1.1-double-violation",
+  declaredTools: [
+    ...validAgentSpecContentRaw.declaredTools,
+    { toolId: "fs.read", scope: "tenant:acme:crm", params: {} },
+    { toolId: "email.send", scope: "tenant:acme:crm", params: {} },
+  ],
+});
+
+export const exfiltrationCombination: readonly ToolId[] = ["fs.read", "email.send"];
+export const forbiddenCombinations: readonly (readonly ToolId[])[] = [exfiltrationCombination];
+
+// Consistent with validAgentSpecContentRaw.evalRequirements = { suiteRef:
+// "suite-crm-v1", passThreshold: 0.9 }.
+export const passingEvalOutcome: EvaluationOutcome = { suiteRef: "suite-crm-v1", score: 0.95 };
+export const wrongSuiteEvalOutcome: EvaluationOutcome = { suiteRef: "suite-other", score: 0.95 };
+export const belowThresholdEvalOutcome: EvaluationOutcome = { suiteRef: "suite-crm-v1", score: 0.5 };
