@@ -7,3 +7,4 @@ export * from "./trust-domain.js";
 export * from "./approval-artifact.js";
 export * from "./evaluation-outcome.js";
 export * from "./call-context.js";
+export * from "./runtime-authorization.js";
