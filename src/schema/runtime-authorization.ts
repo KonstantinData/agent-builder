@@ -1,9 +1,17 @@
 import { z } from "zod";
-import { AgentCallIntentSchema, NoWildcardStringSchema, SpecIdSchema, ToolIdSchema } from "./common.js";
+import {
+  AgentCallIntentSchema,
+  NoWildcardStringSchema,
+  SpecIdSchema,
+  ToolIdSchema,
+  type SpecId,
+} from "./common.js";
 import { AgentSpecContentSchema, type AgentSpecContent } from "./agent-spec-content.js";
 import {
   AgentSpecRuntimeMetadataSchema,
   type AgentSpecRuntimeMetadata,
+  LifecycleStateSchema,
+  type LifecycleState,
 } from "./agent-spec-runtime-metadata.js";
 import { ApprovalArtifactSchema, type ApprovalArtifact } from "./approval-artifact.js";
 import { CallContextSchema, type CallContext } from "./call-context.js";
@@ -50,6 +58,22 @@ export type RuntimeAction = z.infer<typeof RuntimeActionSchema>;
 export type ToolCallRuntimeAction = z.infer<typeof ToolCallRuntimeActionSchema>;
 export type AgentCallRuntimeAction = z.infer<typeof AgentCallRuntimeActionSchema>;
 
+export interface CalleeLifecycleEvidence {
+  readonly calleeSpecId: SpecId;
+  readonly calleeVersionOrChannel: string;
+  readonly state: LifecycleState;
+}
+
+export const CalleeLifecycleEvidenceSchema = z
+  .object({
+    calleeSpecId: SpecIdSchema,
+    calleeVersionOrChannel: z.string().min(1),
+    state: LifecycleStateSchema,
+  })
+  .strict();
+export const _calleeLifecycleEvidenceTypeBinding =
+  CalleeLifecycleEvidenceSchema satisfies z.ZodType<CalleeLifecycleEvidence>;
+
 export const RuntimeAuthorizationInputSchema = z
   .object({
     spec: AgentSpecContentSchema,
@@ -58,6 +82,7 @@ export const RuntimeAuthorizationInputSchema = z
     callContext: CallContextSchema,
     currentRunId: z.string().min(1),
     edgeApprovals: z.array(ApprovalArtifactSchema),
+    calleeLifecycleEvidence: CalleeLifecycleEvidenceSchema.optional(),
   })
   .strict();
 
@@ -68,6 +93,7 @@ export interface RuntimeAuthorizationInput {
   readonly callContext: CallContext;
   readonly currentRunId: string;
   readonly edgeApprovals: ReadonlyArray<ApprovalArtifact>;
+  readonly calleeLifecycleEvidence?: CalleeLifecycleEvidence | undefined;
 }
 
 export const _runtimeAuthorizationInputTypeBinding =
@@ -108,6 +134,9 @@ export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
   "call_intent_not_allowed",
   "human_gate_required",
   "cycle_detected",
+  "callee_lifecycle_evidence_missing",
+  "callee_lifecycle_subject_mismatch",
+  "callee_state_not_callable",
   "depth_exhausted",
   "call_budget_exhausted",
   "budget_increase_forbidden",
@@ -137,6 +166,9 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "call_intent_not_allowed"; readonly intent: string }
   | { readonly type: "human_gate_required"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
   | { readonly type: "cycle_detected"; readonly calleeSpecId: string }
+  | { readonly type: "callee_lifecycle_evidence_missing"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
+  | { readonly type: "callee_lifecycle_subject_mismatch"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
+  | { readonly type: "callee_state_not_callable"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string; readonly state: string }
   | { readonly type: "depth_exhausted" }
   | { readonly type: "call_budget_exhausted" }
   | { readonly type: "budget_increase_forbidden"; readonly budget: RuntimeBudget };

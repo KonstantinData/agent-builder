@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ApprovalArtifactSchema } from "../../src/schema/approval-artifact.js";
 import {
+  CalleeLifecycleEvidenceSchema,
   RUNTIME_AUTHORIZATION_BLOCK_REASONS,
   RuntimeActionSchema,
   RuntimeAuthorizationBlockReasonCodeSchema,
@@ -75,6 +76,25 @@ describe("Runtime authorization schemas", () => {
     ).toBe(true);
   });
 
+  it("accepts only strict, subject-keyed callee lifecycle evidence", () => {
+    const validEvidence = {
+      calleeSpecId: "spec-web-search",
+      calleeVersionOrChannel: "1.0.0",
+      state: "deployed",
+    };
+    expect(CalleeLifecycleEvidenceSchema.safeParse(validEvidence).success).toBe(true);
+
+    for (const invalidEvidence of [
+      { ...validEvidence, calleeSpecId: "" },
+      { ...validEvidence, calleeVersionOrChannel: "" },
+      { ...validEvidence, state: "unknown" },
+      { ...validEvidence, source: "unmodeled" },
+      { calleeSpecId: "spec-web-search", state: "deployed" },
+    ]) {
+      expect(CalleeLifecycleEvidenceSchema.safeParse(invalidEvidence).success).toBe(false);
+    }
+  });
+
   it("accepts edge approval artifacts as runtime inputs, not raw edge arrays", () => {
     const candidate = {
       spec: validAgentSpecContent,
@@ -85,6 +105,37 @@ describe("Runtime authorization schemas", () => {
       edgeApprovals: [edgeApproval],
     };
     expect(RuntimeAuthorizationInputSchema.safeParse(candidate).success).toBe(true);
+
+    const agentCandidate = {
+      ...candidate,
+      action: {
+        type: "agent_call",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+        intent: "query",
+        childBudget: { callBudget: 1, tokenBudget: 1_000, timeBudget: 5_000 },
+      },
+    };
+    expect(RuntimeAuthorizationInputSchema.safeParse(agentCandidate).success).toBe(true);
+
+    const candidateWithEvidence = {
+      ...candidate,
+      calleeLifecycleEvidence: {
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+        state: "deployed",
+      },
+    };
+    expect(RuntimeAuthorizationInputSchema.safeParse(candidateWithEvidence).success).toBe(true);
+    expect(
+      RuntimeAuthorizationInputSchema.safeParse({
+        ...candidateWithEvidence,
+        calleeLifecycleEvidence: {
+          ...candidateWithEvidence.calleeLifecycleEvidence,
+          state: "unknown",
+        },
+      }).success,
+    ).toBe(false);
 
     const rawEdgeCandidate = {
       ...candidate,
@@ -115,6 +166,7 @@ describe("Runtime authorization schemas", () => {
     for (const reason of RUNTIME_AUTHORIZATION_BLOCK_REASONS) {
       expect(RuntimeAuthorizationBlockReasonCodeSchema.safeParse(reason).success).toBe(true);
     }
+    expect(RuntimeAuthorizationBlockReasonCodeSchema.safeParse("callee_state_not_executable").success).toBe(false);
   });
 });
 

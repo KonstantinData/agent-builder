@@ -303,6 +303,8 @@ Runtime Harness v0.1 enforces:
 - human-gated edges fail-closed
 - call-context validity, including the acting spec as the tail of `call_chain`
 - cycle rejection using the full call chain
+- exact-subject lifecycle evidence for agent-call targets, with only `deployed`
+  currently callable
 - depth, call-budget, token-budget, and time-budget spend-down without runtime budget
   increases
 
@@ -349,11 +351,83 @@ authorization input schema
 Consequently, an invalid trusted context wins over a non-executable state, a content-
 hash mismatch wins over expiry, and expiry wins over call-context or action failures.
 
+### Runtime Callee Lifecycle Validity v0.1
+
+Agent calls carry an optional top-level evidence object at the runtime authorization
+boundary:
+
+```text
+CalleeLifecycleEvidence
+  callee_spec_id
+  callee_version_or_channel
+  state
+```
+
+The field is structurally optional because tool calls do not need it, but it is
+semantically mandatory for every `agent_call`. It is caller-supplied,
+control-plane-asserted evidence, not a projection of canonical runtime metadata and
+not a second canonical lifecycle record. A present evidence object is always schema-
+validated. Tool calls ignore structurally valid evidence, including its subject and
+state; structurally invalid evidence still makes the complete authorization input
+invalid.
+
+The lifecycle subject must match the planned action exactly on both
+`callee_spec_id` and the opaque `callee_version_or_channel` string. No channel
+resolution occurs. Evidence for `stable`, for example, asserts only a state for that
+opaque key; it does not prove which concrete version the channel resolves to or that
+the resolved target is currently callable.
+
+```text
+CALLEE_CALLABLE_STATES = [deployed]
+```
+
+Callee callability is intentionally modeled separately from caller executability.
+The two state sets are currently identical, but represent different policy concepts
+and may evolve independently.
+
+Agent-call guard priority is deterministic after the global Runtime Harness guards:
+
+```text
+declared call
+  -> approved edge selection
+  -> human gate
+  -> ambiguous edge
+  -> intent intersection
+  -> cycle detection
+  -> callee lifecycle evidence present
+  -> callee lifecycle subject match
+  -> callee state callable
+  -> depth
+  -> call budget
+  -> child-budget monotonicity
+```
+
+The semantic failures are `callee_lifecycle_evidence_missing`,
+`callee_lifecycle_subject_mismatch`, and `callee_state_not_callable`. This ordering
+means a cycle wins over a revoked presented callee state, while a non-callable callee
+state wins over exhausted depth or budget. The global ordering remains authoritative:
+an expired caller binding blocks before any callee lifecycle evaluation.
+
+This slice validates only the consistency of presented evidence. Against an
+adversarial caller able to shape that evidence, Step 9 does not prove a trustworthy
+current callee state. It performs no callee binding content-hash or lease validation,
+channel resolution, registry/store lookup, heartbeat check, process-liveness check,
+execution, metadata mutation, or lifecycle transition.
+
+An immutable `RuntimeBindingArtifact` can attest only deployment evidence at a point
+in time; by itself it cannot attest a mutable lifecycle state that may later become
+`suspended` or `revoked`. A future attested lifecycle-evidence slice therefore needs
+its own assertion time and recency bound, evaluated against the same injected
+`authorization_time`. That freshness bound is a separate lease from the Step 8
+binding lease. It narrows but cannot eliminate the interval in which revocation may
+occur after evidence was issued. A trusted store read at authorization time is the
+stronger alternative, and its result can be injected so the core authorization
+function remains pure. Neither approach alone proves process liveness.
+
 Known v0.1 boundaries:
 
-- Callee liveness is not checked without callee metadata or a runtime store. The
-  harness authorizes the edge and derived context, not whether the callee is currently
-  suspended, revoked, or live.
+- Presented callee lifecycle eligibility is checked, but evidence authenticity,
+  integrity, freshness, canonical current state, and channel resolution are not.
 - Parent context spend-down is caller-owned in v0.1. The harness returns the authorized
   child context for an agent call; it does not mutate or return the parent context for
   later sibling calls.
