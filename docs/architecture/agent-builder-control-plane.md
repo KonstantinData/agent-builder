@@ -83,7 +83,7 @@ AgentSpecRuntimeMetadata     # mutable, operational
   state_history[]            # {state, actor, timestamp, reason}
   requestor
   deployment_binding?        # {runtime_instance_id, deployed_at, ttl, last_heartbeat}
-  ttl
+  ttl                         # non-authoritative for deployment-binding validity
   last_heartbeat?
   suspended_reason?
   revoked_reason?
@@ -188,13 +188,19 @@ It enforces:
 - metadata must not already have a deployment binding
 - binding context must supply `binding_id`, `runtime_instance_id`, `deployed_at`,
   `ttl`, and an explicit `actor` for state history
+- `deployed_at` must be an RFC 3339 instant carrying `Z` or an explicit numeric
+  offset, with at most millisecond precision
+- `ttl` must be a positive whole-second duration no greater than `315_360_000`
+  seconds; this ten-year value is an absolute structural ceiling, not a default
+  or recommended lease duration
 
 Runtime Binding v0.1 does not start infrastructure, write a registry, execute tools,
 touch memory, create credentials, perform health checks, or attest runtime identity.
 It records a content-bound runtime binding only. Existing deployment bindings block
 fail-closed; idempotent redeploy/rebind belongs to a later drift/revocation-aware
-slice. `ttl` is transported in metadata and binding artifacts in v0.1, but no runtime
-expiry, heartbeat, or liveness logic evaluates it yet.
+slice. Runtime authorization evaluates the transported deployment-binding lease as
+described below, but heartbeat, process-liveness, and runtime-identity attestation
+remain outside this boundary.
 
 ## 8. Agent-to-Agent Call Graph
 
@@ -284,6 +290,8 @@ Runtime Harness v0.1 enforces:
 - full runtime authorization input validation at the boundary
 - executable metadata state `deployed`, never bare `approved`
 - content-hash consistency between immutable spec content and deployment binding
+- temporal validity of the acting deployment binding against a required trusted
+  authorization instant, with no default or system-clock fallback
 - tool calls by exact declared `tool_id` and exact scope string only; there is no scope
   containment inference until a structured scope model exists
 - agent calls by resolved spec declarations and approved `call_graph_edge` artifacts,
@@ -298,6 +306,49 @@ Runtime Harness v0.1 enforces:
 - depth, call-budget, token-budget, and time-budget spend-down without runtime budget
   increases
 
+### Runtime Binding Validity / Lease Expiry v0.1
+
+Runtime Binding Validity v0.1 proves the temporal consistency of the acting spec's
+supplied deployment-binding evidence before any tool or agent action is authorized.
+The Data Plane receives a mandatory `TrustedRuntimeAuthorizationContext` containing
+only `authorization_time`; the harness never falls back to `Date.now()` or another
+implicit clock.
+
+`deployment_binding.ttl` is the only authoritative TTL for this decision. The optional
+top-level runtime-metadata `ttl` is ignored: it is neither a fallback nor combined with
+the binding TTL. Both `deployed_at` and `authorization_time` must be RFC 3339 instants
+with `Z` or an explicit numeric offset and at most millisecond precision. Comparisons
+use parsed absolute instants, never timestamp-string ordering.
+
+```text
+expires_at_ms = deployed_at_instant_ms + deployment_binding.ttl * 1000
+
+valid when:
+  deployed_at_instant_ms <= authorization_time_instant_ms < expires_at_ms
+```
+
+The lower boundary is inclusive. Authorization before `deployed_at` blocks with
+`runtime_binding_not_yet_valid`; authorization exactly at or after `expires_at` blocks
+with `runtime_binding_expired`. Expiry blocks authorization only: this pure harness
+does not mutate metadata or create a lifecycle transition.
+
+Guard priority is deterministic:
+
+```text
+authorization input schema
+  -> trusted authorization context schema
+  -> executable state
+  -> spec/metadata subject match
+  -> deployment binding present
+  -> deployment binding content hash
+  -> temporal binding validity
+  -> call context
+  -> planned action
+```
+
+Consequently, an invalid trusted context wins over a non-executable state, a content-
+hash mismatch wins over expiry, and expiry wins over call-context or action failures.
+
 Known v0.1 boundaries:
 
 - Callee liveness is not checked without callee metadata or a runtime store. The
@@ -308,6 +359,14 @@ Known v0.1 boundaries:
   later sibling calls.
 - `current_run_id` is structurally validated but not attested against a runtime store.
   Run identity attestation belongs to a later runtime binding slice.
+- Process liveness is not proven. That requires heartbeat evidence, a runtime store,
+  and a runtime lookup, none of which this slice performs.
+- Runtime authorization treats the supplied deployment binding as control-plane-
+  asserted evidence. It validates its structure, subject binding, content hash, and
+  temporal consistency, but does not authenticate its provenance or integrity. A
+  future attestation must cover the complete runtime binding artifact. Until then,
+  this slice proves temporal consistency of presented evidence, not that the Control
+  Plane minted it or that it remained unmodified.
 
 ## 11. Drift Detection and Revocation Loop
 

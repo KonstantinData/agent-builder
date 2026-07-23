@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ApprovalArtifactSchema } from "../../src/schema/approval-artifact.js";
 import {
+  RUNTIME_AUTHORIZATION_BLOCK_REASONS,
   RuntimeActionSchema,
+  RuntimeAuthorizationBlockReasonCodeSchema,
   RuntimeAuthorizationInputSchema,
   RuntimeBudgetSchema,
+  TrustedRuntimeAuthorizationContextSchema,
 } from "../../src/schema/runtime-authorization.js";
 import { validAgentSpecContent } from "../fixtures/specs.js";
 
@@ -88,6 +91,30 @@ describe("Runtime authorization schemas", () => {
       edgeApprovals: [edgeApproval.type === "call_graph_edge" ? edgeApproval.edge : {}],
     };
     expect(RuntimeAuthorizationInputSchema.safeParse(rawEdgeCandidate).success).toBe(false);
+  });
+
+  it("accepts unambiguous trusted authorization instants and rejects bare local time", () => {
+    expect(
+      TrustedRuntimeAuthorizationContextSchema.safeParse({
+        authorizationTime: "2026-07-23T12:00:00Z",
+      }).success,
+    ).toBe(true);
+    expect(
+      TrustedRuntimeAuthorizationContextSchema.safeParse({
+        authorizationTime: "2026-07-23T14:00:00+02:00",
+      }).success,
+    ).toBe(true);
+    expect(
+      TrustedRuntimeAuthorizationContextSchema.safeParse({
+        authorizationTime: "2026-07-23T12:00:00",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps runtime authorization block reasons in the closed schema catalog", () => {
+    for (const reason of RUNTIME_AUTHORIZATION_BLOCK_REASONS) {
+      expect(RuntimeAuthorizationBlockReasonCodeSchema.safeParse(reason).success).toBe(true);
+    }
   });
 });
 

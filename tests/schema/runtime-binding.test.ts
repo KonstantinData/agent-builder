@@ -99,6 +99,18 @@ describe("Runtime binding schemas", () => {
     ).toBe(false);
   });
 
+  it("rejects ambiguous deployedAt timestamps at the binding boundary", () => {
+    expect(
+      TrustedRuntimeBindingContextSchema.safeParse({
+        bindingId: "binding-crm-enricher-001",
+        runtimeInstanceId: "runtime-crm-enricher-001",
+        deployedAt: "2026-07-23T12:30:00",
+        ttl: 3600,
+        actor: "deployment-executor",
+      }).success,
+    ).toBe(false);
+  });
+
   it("keeps block reason codes in the closed schema catalog", () => {
     for (const reason of RUNTIME_BINDING_BLOCK_REASONS) {
       expect(RuntimeBindingBlockReasonCodeSchema.safeParse(reason).success).toBe(true);

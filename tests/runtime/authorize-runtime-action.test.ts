@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authorizeRuntimeAction } from "../../src/runtime/authorize-runtime-action.js";
+import { authorizeRuntimeAction as authorizeRuntimeActionWithContext } from "../../src/runtime/authorize-runtime-action.js";
 import { ApprovalArtifactSchema, type ApprovalArtifact } from "../../src/schema/approval-artifact.js";
 import { AgentSpecContentSchema } from "../../src/schema/agent-spec-content.js";
 import { AgentSpecRuntimeMetadataSchema, type AgentSpecRuntimeMetadata } from "../../src/schema/agent-spec-runtime-metadata.js";
@@ -8,6 +8,7 @@ import { SpecIdSchema } from "../../src/schema/common.js";
 import {
   type AgentCallRuntimeAction,
   type RuntimeAuthorizationInput,
+  type TrustedRuntimeAuthorizationContext,
 } from "../../src/schema/runtime-authorization.js";
 import { validAgentSpecContent } from "../fixtures/specs.js";
 
@@ -36,6 +37,17 @@ function metadataInState(state: string): AgentSpecRuntimeMetadata {
 }
 
 const executableMetadata = metadataInState("deployed");
+
+const authorizationContext: TrustedRuntimeAuthorizationContext = {
+  authorizationTime: "2026-07-23T13:00:00Z",
+};
+
+function authorizeRuntimeAction(
+  input: RuntimeAuthorizationInput,
+  context: TrustedRuntimeAuthorizationContext = authorizationContext,
+) {
+  return authorizeRuntimeActionWithContext(input, context);
+}
 
 function callContext(overrides: Record<string, unknown> = {}): CallContext {
   return CallContextSchema.parse({
@@ -143,6 +155,193 @@ describe("authorizeRuntimeAction", () => {
         type: "runtime_binding_content_hash_mismatch",
         specId: "spec-crm-enricher",
         version: "1.0.0",
+      },
+    });
+  });
+
+  it("treats deployedAt as an inclusive lower lease boundary across equivalent offsets", () => {
+    const metadata = AgentSpecRuntimeMetadataSchema.parse({
+      ...executableMetadata,
+      deploymentBinding: {
+        ...executableMetadata.deploymentBinding,
+        deployedAt: "2026-07-23T14:30:00+02:00",
+      },
+    });
+
+    expect(
+      authorizeRuntimeAction(baseInput({ metadata }), {
+        authorizationTime: "2026-07-23T12:30:00Z",
+      }),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it("allows a binding immediately before expiry and blocks it exactly at expiry", () => {
+    expect(
+      authorizeRuntimeAction(baseInput(), {
+        authorizationTime: "2026-07-23T13:29:59.999Z",
+      }),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+
+    expect(
+      authorizeRuntimeAction(baseInput(), {
+        authorizationTime: "2026-07-23T13:30:00Z",
+      }),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
+    });
+  });
+
+  it("blocks a binding before its deployedAt instant", () => {
+    expect(
+      authorizeRuntimeAction(baseInput(), {
+        authorizationTime: "2026-07-23T12:29:59.999Z",
+      }),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_not_yet_valid", bindingId: "binding-crm-enricher-001" },
+    });
+  });
+
+  it("validates trusted authorization context before executable state", () => {
+    expect(
+      authorizeRuntimeActionWithContext(
+        baseInput({ metadata: metadataInState("revoked") }),
+        { authorizationTime: "2026-07-23T13:00:00" } as TrustedRuntimeAuthorizationContext,
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_authorization_context_invalid",
+        reason: "schema_validation_failed",
+      },
+    });
+  });
+
+  it("rejects structurally invalid binding timestamps before temporal evaluation", () => {
+    const metadata = {
+      ...executableMetadata,
+      deploymentBinding: {
+        ...executableMetadata.deploymentBinding,
+        deployedAt: "2026-07-23T12:30:00",
+      },
+    } as AgentSpecRuntimeMetadata;
+
+    expect(authorizeRuntimeAction(baseInput({ metadata }))).toEqual({
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+    });
+  });
+
+  it("uses only deploymentBinding.ttl and ignores divergent top-level metadata.ttl", () => {
+    const shortTopLevelTtlMetadata = AgentSpecRuntimeMetadataSchema.parse({
+      ...executableMetadata,
+      ttl: 1,
+    });
+
+    expect(authorizeRuntimeAction(baseInput({ metadata: shortTopLevelTtlMetadata }))).toEqual({
+      outcome: "allowed",
+      actionType: "tool_call",
+    });
+
+    const longTopLevelTtlMetadata = AgentSpecRuntimeMetadataSchema.parse({
+      ...executableMetadata,
+      ttl: 7200,
+    });
+
+    expect(
+      authorizeRuntimeAction(baseInput({ metadata: longTopLevelTtlMetadata }), {
+        authorizationTime: "2026-07-23T13:30:00Z",
+      }),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
+    });
+  });
+
+  it("checks binding identity before expiry and expiry before call-context validity", () => {
+    const mismatchedMetadata = AgentSpecRuntimeMetadataSchema.parse({
+      ...executableMetadata,
+      deploymentBinding: {
+        ...executableMetadata.deploymentBinding,
+        contentHash: "hash-other",
+      },
+    });
+
+    expect(
+      authorizeRuntimeAction(baseInput({ metadata: mismatchedMetadata }), {
+        authorizationTime: "2026-07-23T14:00:00Z",
+      }),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_content_hash_mismatch",
+        specId: "spec-crm-enricher",
+        version: "1.0.0",
+      },
+    });
+
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ callContext: callContext({ callChain: ["spec-other"] }) }),
+        { authorizationTime: "2026-07-23T14:00:00Z" },
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
+    });
+  });
+
+  it.each([
+    { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" } as const,
+    agentAction,
+  ])("blocks expired bindings before authorizing $type actions", (action) => {
+    expect(
+      authorizeRuntimeAction(baseInput({ action }), {
+        authorizationTime: "2026-07-23T14:00:00Z",
+      }),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
+    });
+  });
+
+  it("is deterministic and does not mutate trusted authorization context", () => {
+    const context: TrustedRuntimeAuthorizationContext = {
+      authorizationTime: "2026-07-23T13:00:00Z",
+    };
+    const input = baseInput();
+    const snapshot = structuredClone(context);
+    const inputSnapshot = structuredClone(input);
+
+    const first = authorizeRuntimeAction(input, context);
+    const second = authorizeRuntimeAction(input, context);
+
+    expect(first).toEqual(second);
+    expect(input).toEqual(inputSnapshot);
+    expect(context).toEqual(snapshot);
+  });
+
+  it("requires trusted authorization context with no wall-clock fallback", () => {
+    // @ts-expect-error Step 8 intentionally makes trusted authorization time mandatory.
+    expect(authorizeRuntimeActionWithContext(baseInput())).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_authorization_context_invalid",
+        reason: "schema_validation_failed",
+      },
+    });
+
+    expect(
+      authorizeRuntimeActionWithContext(baseInput(), {
+        authorizationTime: "2026-07-23T13:00:00Z",
+        source: "caller-clock",
+      } as TrustedRuntimeAuthorizationContext),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_authorization_context_invalid",
+        reason: "schema_validation_failed",
       },
     });
   });
@@ -397,6 +596,15 @@ describe("authorizeRuntimeAction", () => {
     } as RuntimeAuthorizationInput;
 
     expect(authorizeRuntimeAction(invalidInput)).toEqual({
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+    });
+
+    expect(
+      authorizeRuntimeActionWithContext(invalidInput, {
+        authorizationTime: "2026-07-23T13:00:00",
+      } as TrustedRuntimeAuthorizationContext),
+    ).toEqual({
       outcome: "blocked",
       reason: { type: "input_invalid", reason: "schema_validation_failed" },
     });

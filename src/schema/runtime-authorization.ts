@@ -7,6 +7,7 @@ import {
 } from "./agent-spec-runtime-metadata.js";
 import { ApprovalArtifactSchema, type ApprovalArtifact } from "./approval-artifact.js";
 import { CallContextSchema, type CallContext } from "./call-context.js";
+import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
 
 /**
  * Runtime budget dimensions are intentionally separate from spec `Budget`.
@@ -72,12 +73,32 @@ export interface RuntimeAuthorizationInput {
 export const _runtimeAuthorizationInputTypeBinding =
   RuntimeAuthorizationInputSchema satisfies z.ZodType<RuntimeAuthorizationInput>;
 
+/**
+ * Data-plane asserted decision context. It is separate from caller-supplied
+ * authorization input so the decision instant has an explicit provenance
+ * boundary and can be injected deterministically without a wall-clock fallback.
+ */
+export interface TrustedRuntimeAuthorizationContext {
+  readonly authorizationTime: string;
+}
+
+export const TrustedRuntimeAuthorizationContextSchema = z
+  .object({
+    authorizationTime: Rfc3339WithOffsetSchema,
+  })
+  .strict();
+export const _trustedRuntimeAuthorizationContextTypeBinding =
+  TrustedRuntimeAuthorizationContextSchema satisfies z.ZodType<TrustedRuntimeAuthorizationContext>;
+
 export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
   "input_invalid",
   "runtime_state_not_executable",
   "runtime_subject_mismatch",
   "runtime_binding_missing",
   "runtime_binding_content_hash_mismatch",
+  "runtime_authorization_context_invalid",
+  "runtime_binding_not_yet_valid",
+  "runtime_binding_expired",
   "call_context_invalid",
   "tool_not_declared",
   "tool_scope_not_allowed",
@@ -104,6 +125,9 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "runtime_subject_mismatch"; readonly specId: string; readonly version: string }
   | { readonly type: "runtime_binding_missing"; readonly specId: string; readonly version: string }
   | { readonly type: "runtime_binding_content_hash_mismatch"; readonly specId: string; readonly version: string }
+  | { readonly type: "runtime_authorization_context_invalid"; readonly reason: string }
+  | { readonly type: "runtime_binding_not_yet_valid"; readonly bindingId: string }
+  | { readonly type: "runtime_binding_expired"; readonly bindingId: string }
   | { readonly type: "call_context_invalid"; readonly reason: string }
   | { readonly type: "tool_not_declared"; readonly toolId: string }
   | { readonly type: "tool_scope_not_allowed"; readonly toolId: string; readonly scope: string }
