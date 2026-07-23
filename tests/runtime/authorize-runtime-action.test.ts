@@ -12,6 +12,7 @@ import { CallContextSchema, type CallContext } from "../../src/schema/call-conte
 import { SpecIdSchema } from "../../src/schema/common.js";
 import {
   AgentLifecycleEvidencePayloadSchema,
+  CallGraphEdgeApprovalEvidencePayloadSchema,
   type AttestationEvidenceKind,
   type AttestedAgentLifecycleEvidence,
   type AttestedCallGraphEdgeApproval,
@@ -155,8 +156,9 @@ function runContextEvidence(
 function edgeApproval(
   edgeOverrides: Record<string, unknown> = {},
   approvalOverrides: Record<string, unknown> = {},
+  evidenceOverrides: Record<string, unknown> = {},
 ): AttestedCallGraphEdgeApproval {
-  const payload = DecidedCallGraphEdgeApprovalSchema.parse({
+  const approval = DecidedCallGraphEdgeApprovalSchema.parse({
     type: "call_graph_edge",
     artifactId: "approval-edge-001",
     requestedBy: "builder-agent",
@@ -178,6 +180,12 @@ function edgeApproval(
       ...edgeOverrides,
     },
     ...approvalOverrides,
+  });
+  const payload = CallGraphEdgeApprovalEvidencePayloadSchema.parse({
+    approval,
+    assertedAt: "2026-07-23T12:59:00Z",
+    freshnessTtl: 300,
+    ...evidenceOverrides,
   });
   return attestCallGraphEdgeApproval(payload);
 }
@@ -211,6 +219,18 @@ function agentInput(overrides: Partial<RuntimeAuthorizationInput> = {}): Runtime
     action: agentAction,
     calleeLifecycleEvidence: lifecycleEvidence("callee"),
     ...overrides,
+  });
+}
+
+function agentInputWithFreshSupportingEvidence(
+  assertedAt: string,
+  attestedEdgeApprovals: ReadonlyArray<AttestedCallGraphEdgeApproval>,
+): RuntimeAuthorizationInput {
+  return agentInput({
+    actingLifecycleEvidence: lifecycleEvidence("acting", { assertedAt }),
+    runContextEvidence: runContextEvidence(runtimeSpec, { assertedAt }),
+    calleeLifecycleEvidence: lifecycleEvidence("callee", { assertedAt }),
+    attestedEdgeApprovals,
   });
 }
 
@@ -1096,7 +1116,10 @@ describe("authorizeRuntimeAction tool semantics", () => {
       ...baseInput(),
       attestedEdgeApprovals: [
         {
-          payload: { ...edgeApproval().payload, decision: "pending" },
+          payload: {
+            ...edgeApproval().payload,
+            approval: { ...edgeApproval().payload.approval, decision: "pending" },
+          },
           attestation: edgeApproval().attestation,
         },
       ],
@@ -1145,6 +1168,199 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
+  it("uses a half-open edge-approval authority lease with no skew grace", () => {
+    const authority = edgeApproval({}, {}, { assertedAt: "2026-07-23T13:00:00Z" });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [authority]),
+        { authorizationTime: "2026-07-23T13:00:00Z" },
+      ),
+    ).toMatchObject({ outcome: "allowed" });
+    expect(
+      authorizeRuntimeAction(
+        agentInputWithFreshSupportingEvidence("2026-07-23T13:00:00Z", [authority]),
+        { authorizationTime: "2026-07-23T13:04:59.999Z" },
+      ),
+    ).toMatchObject({ outcome: "allowed" });
+    expect(
+      authorizeRuntimeAction(
+        agentInputWithFreshSupportingEvidence("2026-07-23T13:04:00Z", [authority]),
+        { authorizationTime: "2026-07-23T13:05:00Z" },
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_not_fresh",
+        condition: "expired",
+        artifactId: "approval-edge-001",
+      },
+    });
+    expect(
+      authorizeRuntimeAction(
+        agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [authority]),
+        { authorizationTime: "2026-07-23T12:59:59.999Z" },
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_not_fresh",
+        condition: "from_future",
+        artifactId: "approval-edge-001",
+      },
+    });
+  });
+
+  it("compares edge-approval freshness as absolute instants across offsets", () => {
+    const authority = edgeApproval(
+      {},
+      {},
+      { assertedAt: "2026-07-23T14:59:00+02:00" },
+    );
+    expect(
+      authorizeRuntimeAction(
+        agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [authority]),
+        { authorizationTime: "2026-07-23T13:00:00Z" },
+      ),
+    ).toMatchObject({ outcome: "allowed" });
+  });
+
+  it("requires a decision to exist no later than its authority assertion", () => {
+    const equalInstants = edgeApproval(
+      {},
+      { decidedAt: "2026-07-23T13:00:00Z" },
+      { assertedAt: "2026-07-23T15:00:00+02:00" },
+    );
+    expect(
+      authorizeRuntimeAction(
+        agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [equalInstants]),
+      ),
+    ).toMatchObject({ outcome: "allowed" });
+
+    const impossibleTimeline = edgeApproval(
+      {},
+      { decidedAt: "2026-07-23T13:00:00Z" },
+      { assertedAt: "2026-07-23T12:59:59.999Z" },
+    );
+    expect(
+      authorizeRuntimeAction(
+        agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [impossibleTimeline]),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_invalid",
+        condition: "decision_after_assertion",
+        artifactId: "approval-edge-001",
+      },
+    });
+  });
+
+  it("checks approval causality before freshness for approved and rejected evidence", () => {
+    for (const decision of ["approved", "rejected"] as const) {
+      const impossibleAndExpired = edgeApproval(
+        {},
+        {
+          artifactId: `approval-edge-${decision}`,
+          decision,
+          ...(decision === "rejected" ? { reason: "denied" } : {}),
+          decidedAt: "2026-07-23T13:01:00Z",
+        },
+        { assertedAt: "2026-07-23T12:00:00Z", freshnessTtl: 1 },
+      );
+      expect(
+        authorizeRuntimeAction(
+          agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [
+            impossibleAndExpired,
+          ]),
+        ),
+      ).toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "call_graph_edge_approval_invalid",
+          condition: "decision_after_assertion",
+          artifactId: `approval-edge-${decision}`,
+        },
+      });
+    }
+  });
+
+  it("validates every relevant authority lease before filtering rejected decisions", () => {
+    const freshApproved = edgeApproval();
+    const staleRejected = edgeApproval(
+      {},
+      {
+        artifactId: "approval-edge-rejected",
+        decision: "rejected",
+        reason: "denied",
+      },
+      { assertedAt: "2026-07-23T12:00:00Z", freshnessTtl: 1 },
+    );
+    for (const approvals of [
+      [freshApproved, staleRejected],
+      [staleRejected, freshApproved],
+    ]) {
+      expect(
+        authorizeRuntimeAction(
+          agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", approvals),
+        ),
+      ).toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "call_graph_edge_approval_not_fresh",
+          condition: "expired",
+          artifactId: "approval-edge-rejected",
+        },
+      });
+    }
+  });
+
+  it("ignores stale subject-irrelevant edge evidence and all valid edge evidence for tool calls", () => {
+    const irrelevantStale = edgeApproval(
+      { calleeSpecId: "spec-foreign" },
+      { artifactId: "approval-edge-foreign" },
+      { assertedAt: "2026-07-23T12:00:00Z", freshnessTtl: 1 },
+    );
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [irrelevantStale, edgeApproval()] }),
+      ),
+    ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
+    expect(
+      authorizeRuntimeAction(baseInput({ attestedEdgeApprovals: [irrelevantStale] })),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it("keeps binding and run-context guards ahead of edge-approval freshness", () => {
+    const staleAuthority = edgeApproval(
+      {},
+      {},
+      { assertedAt: "2026-07-23T12:00:00Z", freshnessTtl: 1 },
+    );
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, {
+            deployedAt: "2026-07-23T10:00:00Z",
+            ttl: 1,
+          }),
+          attestedEdgeApprovals: [staleAuthority],
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "runtime_binding_expired" } });
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            assertedAt: "2026-07-23T12:00:00Z",
+            freshnessTtl: 1,
+          }),
+          attestedEdgeApprovals: [staleAuthority],
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "run_context_not_fresh", condition: "expired" } });
+  });
+
   it.each([
     { callerSpecId: "spec-other" },
     { callerVersion: "9.9.9" },
@@ -1172,9 +1388,12 @@ describe("authorizeRuntimeAction agent calls", () => {
       ...foreign,
       payload: {
         ...foreign.payload,
-        edge: {
-          ...foreign.payload.edge,
-          calleeSpecId: SpecIdSchema.parse("spec-web-search"),
+        approval: {
+          ...foreign.payload.approval,
+          edge: {
+            ...foreign.payload.approval.edge,
+            calleeSpecId: SpecIdSchema.parse("spec-web-search"),
+          },
         },
       },
     };
@@ -1191,9 +1410,12 @@ describe("authorizeRuntimeAction agent calls", () => {
       ...relevant,
       payload: {
         ...relevant.payload,
-        edge: {
-          ...relevant.payload.edge,
-          calleeSpecId: SpecIdSchema.parse("spec-foreign"),
+        approval: {
+          ...relevant.payload.approval,
+          edge: {
+            ...relevant.payload.approval.edge,
+            calleeSpecId: SpecIdSchema.parse("spec-foreign"),
+          },
         },
       },
     };
@@ -1544,6 +1766,9 @@ describe("authorizeRuntimeAction agent calls", () => {
           runContextEvidence: runContextEvidence(runtimeSpec, {
             assertedAt: "2026-07-23T13:00:00Z",
           }),
+          attestedEdgeApprovals: [
+            edgeApproval({}, {}, { assertedAt: "2026-07-23T13:00:00Z" }),
+          ],
         }),
         { authorizationTime: "2026-07-23T13:04:59.999Z" },
       ),
@@ -1558,6 +1783,9 @@ describe("authorizeRuntimeAction agent calls", () => {
           runContextEvidence: runContextEvidence(runtimeSpec, {
             assertedAt: "2026-07-23T13:04:00Z",
           }),
+          attestedEdgeApprovals: [
+            edgeApproval({}, {}, { assertedAt: "2026-07-23T13:04:00Z" }),
+          ],
         }),
         { authorizationTime: "2026-07-23T13:05:00Z" },
       ),

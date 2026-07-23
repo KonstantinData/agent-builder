@@ -111,10 +111,15 @@ already-approved, versioned bindings.
     root/parent/current-run relations before any planned action guard
   - authorizes tool calls only by exact declared tool/scope matches
   - authorizes agent calls only through complete, decided, Ed25519-attested
-    call-graph edge approval artifacts
+    call-graph edge approval authority assertions
+  - separates immutable approval history (`decidedAt`) from a renewable, maximum
+    300-second authority lease (`assertedAt` plus `freshnessTtl`)
+  - requires the embedded decision to exist no later than its authority assertion
+    and evaluates the lease as a half-open absolute-instant interval
   - prefilters edge evidence only by the signed caller/callee/version/channel subject
     plus the acting spec's verified caller trust domain, then verifies every selected
-    entry before reading its decision or policy fields
+    entry, its decision/assertion causality, and its freshness before reading its
+    decision or policy fields
   - ignores cryptographically invalid but subject-irrelevant edge evidence while
     failing closed on every selected entry in input order
   - requires intents to be allowed by both the spec declaration and approved edge
@@ -219,9 +224,9 @@ This package intentionally keeps several capabilities out of scope:
   but cannot eliminate the post-assertion revocation window
 - no clock-skew grace for future-dated lifecycle evidence in v0.1
 - no channel resolution or process-liveness claim from lifecycle evidence
-- no proof that a presented, validly attested call-graph approval is the latest
-  canonical decision, has not been revoked, or is protected against replay; approval
-  versioning, revocation lookup, and authority freshness remain future slices
+- no proof that a presented, fresh, validly attested call-graph approval is the latest
+  canonical decision, has not been revoked inside its lease window, or is single-use;
+  approval versioning, revocation lookup, and nonce storage remain future slices
 - no parent-budget consumption, sibling/nonce replay protection, or proof that a
   presented parent run actually issued a child context; those require a runtime store
   or parent-decision linkage beyond signed run-context integrity

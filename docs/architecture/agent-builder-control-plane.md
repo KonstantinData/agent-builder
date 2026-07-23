@@ -515,13 +515,13 @@ Only the strict schema-validated payload is signed. The envelope, key ID, and
 signature are not part of the signed bytes. Step-10 binding and lifecycle payload
 fields are all required and use only strings and integers; no optional or
 floating-point Step-10 signed field is permitted. Five versioned domain tags now
-prevent type and role replay across Steps 10 through 12:
+prevent type and role replay across Steps 10 through 13:
 
 ```text
 agent-builder/attest/runtime-binding/v1
 agent-builder/attest/lifecycle/acting/v1
 agent-builder/attest/lifecycle/callee/v1
-agent-builder/attest/approval/call-graph-edge/v1
+agent-builder/attest/approval/call-graph-edge/v2
 agent-builder/attest/run-context/v1
 ```
 
@@ -722,15 +722,90 @@ claimed parent issued the child, attest current run identity, resolve channels, 
 hold private keys, query a runtime store, or prove process liveness. Freshness narrows
 the replay window but does not provide single-use semantics.
 
+### Call-Graph Edge Approval Authority Lease v0.1
+
+Step 13 time-bounds the runtime authority introduced by Step 11 without reusing the
+approval decision timestamp as a lease. The runtime evidence shape is a breaking
+replacement with a v2 signature domain:
+
+```text
+CallGraphEdgeApprovalEvidencePayload
+  approval: DecidedCallGraphEdgeApproval
+    type: call_graph_edge
+    artifact_id
+    requested_by
+    decision: approved | rejected
+    decided_by
+    decided_at                         # immutable audit history
+    reason?
+    edge: AgentCallPolicyEdge
+  asserted_at                          # authority assertion instant
+  freshness_ttl                        # positive whole seconds, max 300
+
+AttestedCallGraphEdgeApproval
+  payload: CallGraphEdgeApprovalEvidencePayload
+  attestation: AttestationEnvelope
+```
+
+The evidence kind remains `call_graph_edge_approval`; the signature domain changes to
+`agent-builder/attest/approval/call-graph-edge/v2`. The version bump prevents a v1
+signature over a bare `DecidedCallGraphEdgeApproval` from being accepted as a v2
+authority lease. Both payload objects are strict. `decided_at` remains decision
+history and never starts or renews runtime authority.
+
+An authority assertion is internally coherent only when the embedded decision already
+exists at the assertion instant:
+
+```text
+approval.decided_at_instant_ms <= asserted_at_instant_ms
+```
+
+The comparison uses absolute instants. Equal instants are valid. A later decision is
+blocked as `call_graph_edge_approval_invalid` with condition
+`decision_after_assertion`. RFC 3339 strings are not normalized before signing:
+different offset spellings of the same instant remain different signature bytes while
+producing the same temporal comparison result.
+
+Freshness is deterministic and half-open, with no skew grace or implicit clock:
+
+```text
+fresh_until_ms = asserted_at_instant_ms + freshness_ttl * 1000
+
+fresh when:
+  asserted_at_instant_ms <= authorization_time_instant_ms < fresh_until_ms
+```
+
+Future and expired assertions use `call_graph_edge_approval_not_fresh`, parameterized
+by `from_future` or `expired` plus the approval `artifact_id`. Invalid timestamp or TTL
+shape remains `input_invalid`; key-purpose and signature failures retain the generic
+attestation reasons.
+
+Agent calls preserve the Step 11 dependency chain. The Harness selects candidates by
+the five presented subject fields, verifies the signature over those exact selected
+bytes, then checks decision/assertion causality and authority freshness. It performs
+all of those checks for every relevant entry in input order before reading `decision`
+or filtering rejected history. Subject-irrelevant evidence is not inspected beyond
+structural input validation. Tool calls likewise ignore structurally valid edge
+evidence entirely.
+
+A stale or causally invalid relevant rejected artifact therefore blocks fail-closed.
+Because the presenter chooses the evidence set, this permits presenter self-denial but
+does not expand privilege. Rejection remains decision history, not revocation.
+
+The lease narrows the replay window but proves neither the latest canonical decision
+nor non-revocation inside the lease window, and it does not make an assertion
+single-use. Closing those gaps requires a later canonical approval version/revocation
+lookup and nonce or consumption storage.
+
 Known v0.1 boundaries:
 
 - Signed lifecycle freshness bounds evidence age but does not prove synchronous
   current state after `asserted_at`; there is no lifecycle store lookup.
-- A presented decided call-graph approval now has authenticated origin and integrity,
-  but the harness does not prove that it is the latest canonical decision, that it was
-  not later revoked, or that an old valid approval is not being replayed. `decided_at`
-  is audit evidence, not a freshness lease. Approval versioning, revocation lookup,
-  and time-bounded authority evidence remain later slices.
+- A presented decided call-graph approval now has authenticated origin, integrity, and
+  a maximum 300-second authority lease, but the harness does not prove that it is the
+  latest canonical decision, that it was not revoked inside that window, or that the
+  same assertion is single-use. Approval versioning, revocation lookup, and replay
+  storage remain later slices.
 - Parent context, `current_run_id`, cycle chain, depth, and remaining budgets are now
   authenticated as presented evidence. The harness still does not mutate or return a
   consumed parent context for later sibling calls, so aggregate sibling spend-down is

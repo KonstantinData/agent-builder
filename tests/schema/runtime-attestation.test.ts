@@ -10,10 +10,13 @@ import {
   AttestedCallGraphEdgeApprovalSchema,
   AttestedRunContextEvidenceSchema,
   AttestedRuntimeBindingEvidenceSchema,
+  CallGraphEdgeApprovalEvidenceFreshnessTtlSchema,
+  CallGraphEdgeApprovalEvidencePayloadSchema,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
   CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
   Ed25519PublicKeySpkiDerBase64Schema,
   LifecycleEvidenceFreshnessTtlSchema,
+  MAX_CALL_GRAPH_EDGE_APPROVAL_EVIDENCE_FRESHNESS_SECONDS,
   MAX_LIFECYCLE_EVIDENCE_FRESHNESS_SECONDS,
   MAX_RUN_CONTEXT_EVIDENCE_FRESHNESS_SECONDS,
   RUN_CONTEXT_ATTESTATION_DOMAIN,
@@ -27,6 +30,7 @@ import {
   RUNTIME_ATTESTATION_DOMAINS,
   RUNTIME_ATTESTATION_DOMAIN_BY_EVIDENCE_KIND,
   createAttestationPreimage,
+  type RuntimeAttestationDomain,
   verifyEd25519Attestation,
 } from "../../src/runtime/runtime-attestation.js";
 import {
@@ -81,6 +85,12 @@ const approvalPayload = DecidedCallGraphEdgeApprovalSchema.parse({
   },
 });
 
+const approvalEvidencePayload = CallGraphEdgeApprovalEvidencePayloadSchema.parse({
+  approval: approvalPayload,
+  assertedAt: "2026-07-23T12:59:00Z",
+  freshnessTtl: 300,
+});
+
 const runContextPayload = RunContextEvidencePayloadSchema.parse({
   specId: "spec-crm-enricher",
   version: "1.0.0",
@@ -109,7 +119,7 @@ describe("runtime attestation schemas", () => {
       "agent-builder/attest/lifecycle/callee/v1",
     );
     expect(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN).toBe(
-      "agent-builder/attest/approval/call-graph-edge/v1",
+      "agent-builder/attest/approval/call-graph-edge/v2",
     );
     expect(RUN_CONTEXT_ATTESTATION_DOMAIN).toBe("agent-builder/attest/run-context/v1");
     expect(RUNTIME_ATTESTATION_DOMAINS).toEqual([
@@ -150,6 +160,27 @@ describe("runtime attestation schemas", () => {
     expect(RunContextFreshnessTtlSchema.safeParse(300).success).toBe(true);
     for (const value of [0, -1, 0.5, 301, Number.POSITIVE_INFINITY, Number.NaN]) {
       expect(RunContextFreshnessTtlSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  it("accepts only positive whole-second edge-approval authority leases up to 300 seconds", () => {
+    expect(MAX_CALL_GRAPH_EDGE_APPROVAL_EVIDENCE_FRESHNESS_SECONDS).toBe(300);
+    expect(CallGraphEdgeApprovalEvidenceFreshnessTtlSchema.safeParse(1).success).toBe(true);
+    expect(CallGraphEdgeApprovalEvidenceFreshnessTtlSchema.safeParse(300).success).toBe(true);
+    for (const value of [0, -1, 0.5, 301, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(CallGraphEdgeApprovalEvidenceFreshnessTtlSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  it("requires strict complete edge-approval authority payloads", () => {
+    expect(CallGraphEdgeApprovalEvidencePayloadSchema.safeParse(approvalEvidencePayload).success).toBe(true);
+    for (const invalid of [
+      { ...approvalEvidencePayload, assertedAt: "2026-07-23T12:59:00" },
+      { ...approvalEvidencePayload, freshnessTtl: 301 },
+      { ...approvalEvidencePayload, extra: "field" },
+      { approval: approvalPayload, assertedAt: approvalEvidencePayload.assertedAt },
+    ]) {
+      expect(CallGraphEdgeApprovalEvidencePayloadSchema.safeParse(invalid).success).toBe(false);
     }
   });
 
@@ -262,7 +293,7 @@ describe("runtime attestation schemas", () => {
       attestation: signPayload(ACTING_LIFECYCLE_ATTESTATION_DOMAIN, lifecyclePayload),
     };
     const bindingEvidence = attestRuntimeBinding(bindingPayload);
-    const approvalEvidence = attestCallGraphEdgeApproval(approvalPayload);
+    const approvalEvidence = attestCallGraphEdgeApproval(approvalEvidencePayload);
     const runContextEvidence = attestRunContext(runContextPayload);
     expect(AttestedAgentLifecycleEvidenceSchema.safeParse(lifecycleEvidence).success).toBe(true);
     expect(AttestedRuntimeBindingEvidenceSchema.safeParse(bindingEvidence).success).toBe(true);
@@ -313,28 +344,25 @@ describe("runtime attestation canonical preimages and Ed25519 vectors", () => {
 
   it("pins an independent call-graph approval preimage and signature vector", () => {
     const canonicalJson =
-      '{"artifactId":"approval-edge-001","decidedAt":"2026-07-23T12:00:00Z","decidedBy":"policy-harness","decision":"approved","edge":{"allowedIntents":["query"],"calleeSpecId":"spec-web-search","calleeVersionOrChannel":"1.0.0","callerSpecId":"spec-crm-enricher","callerVersion":"1.0.0","dataShareScope":"tenant:acme:crm","maxCallsPerRun":3,"maxCallsPerTimeWindow":100,"maxDepth":1,"requiresHumanGate":false,"trustDomainId":"domain-sales"},"requestedBy":"builder-agent","type":"call_graph_edge"}';
+      '{"approval":{"artifactId":"approval-edge-001","decidedAt":"2026-07-23T12:00:00Z","decidedBy":"policy-harness","decision":"approved","edge":{"allowedIntents":["query"],"calleeSpecId":"spec-web-search","calleeVersionOrChannel":"1.0.0","callerSpecId":"spec-crm-enricher","callerVersion":"1.0.0","dataShareScope":"tenant:acme:crm","maxCallsPerRun":3,"maxCallsPerTimeWindow":100,"maxDepth":1,"requiresHumanGate":false,"trustDomainId":"domain-sales"},"requestedBy":"builder-agent","type":"call_graph_edge"},"assertedAt":"2026-07-23T12:59:00Z","freshnessTtl":300}';
     const expectedPreimage = Buffer.from(
       `${CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN}\n${canonicalJson}`,
       "utf8",
     );
     const preimage = createAttestationPreimage(
       CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
-      approvalPayload,
+      approvalEvidencePayload,
     );
     expect(preimage).toEqual(expectedPreimage);
-    expect(preimage.toString("hex")).toBe(
-      "6167656e742d6275696c6465722f6174746573742f617070726f76616c2f63616c6c2d67726170682d656467652f76310a7b2261727469666163744964223a22617070726f76616c2d656467652d303031222c22646563696465644174223a22323032362d30372d32335431323a30303a30305a222c22646563696465644279223a22706f6c6963792d6861726e657373222c226465636973696f6e223a22617070726f766564222c2265646765223a7b22616c6c6f776564496e74656e7473223a5b227175657279225d2c2263616c6c6565537065634964223a22737065632d7765622d736561726368222c2263616c6c656556657273696f6e4f724368616e6e656c223a22312e302e30222c2263616c6c6572537065634964223a22737065632d63726d2d656e726963686572222c2263616c6c657256657273696f6e223a22312e302e30222c2264617461536861726553636f7065223a2274656e616e743a61636d653a63726d222c226d617843616c6c7350657252756e223a332c226d617843616c6c7350657254696d6557696e646f77223a3130302c226d61784465707468223a312c22726571756972657348756d616e47617465223a66616c73652c227472757374446f6d61696e4964223a22646f6d61696e2d73616c6573227d2c227265717565737465644279223a226275696c6465722d6167656e74222c2274797065223a2263616c6c5f67726170685f65646765227d",
-    );
 
-    const envelope = signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, approvalPayload);
+    const envelope = signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, approvalEvidencePayload);
     expect(envelope.signatureBase64).toBe(
-      "455A8uxGmGPcAlxAwMoiG26asCmEITY/2XRIkMSRokVIaKTEHv70CbI6FXaX5nC+zmn/YZc0nHZUYjqG42zFBg==",
+      "wVWKNMF9LSmPXjNfWTnIpZiebex+p3i7axbep1zERz7m1UP6lQYZu4nkrDZRrbL6smBZsPSeJBJtv+9ps8B3BA==",
     );
     expect(
       verifyEd25519Attestation(
         CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
-        approvalPayload,
+        approvalEvidencePayload,
         envelope,
         TEST_TRUSTED_ATTESTATION_KEY,
       ),
@@ -377,25 +405,82 @@ describe("runtime attestation canonical preimages and Ed25519 vectors", () => {
       ...approvalPayload,
       reason: undefined,
     });
-    expect(
-      createAttestationPreimage(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, omitted),
-    ).toEqual(
-      createAttestationPreimage(
-        CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
-        explicitUndefined,
-      ),
-    );
-    expect(
-      signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, omitted),
-    ).toEqual(signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, explicitUndefined));
+    const omittedEvidencePayload = CallGraphEdgeApprovalEvidencePayloadSchema.parse({
+      ...approvalEvidencePayload,
+      approval: omitted,
+    });
+    const explicitUndefinedEvidencePayload = CallGraphEdgeApprovalEvidencePayloadSchema.parse({
+      ...approvalEvidencePayload,
+      approval: explicitUndefined,
+    });
     expect(
       createAttestationPreimage(
         CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
-        Object.fromEntries(Object.entries(omitted).reverse()),
+        omittedEvidencePayload,
       ),
     ).toEqual(
-      createAttestationPreimage(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, omitted),
+      createAttestationPreimage(
+        CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+        explicitUndefinedEvidencePayload,
+      ),
     );
+    expect(
+      signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, omittedEvidencePayload),
+    ).toEqual(
+      signPayload(
+        CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+        explicitUndefinedEvidencePayload,
+      ),
+    );
+    expect(
+      createAttestationPreimage(
+        CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+        Object.fromEntries(Object.entries(omittedEvidencePayload).reverse()),
+      ),
+    ).toEqual(
+      createAttestationPreimage(
+        CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+        omittedEvidencePayload,
+      ),
+    );
+  });
+
+  it("keeps equivalent timestamp offsets semantically equal but byte-distinct", () => {
+    const zPayload = CallGraphEdgeApprovalEvidencePayloadSchema.parse({
+      ...approvalEvidencePayload,
+      assertedAt: "2026-07-23T12:59:00Z",
+    });
+    const offsetPayload = CallGraphEdgeApprovalEvidencePayloadSchema.parse({
+      ...approvalEvidencePayload,
+      assertedAt: "2026-07-23T14:59:00+02:00",
+    });
+
+    expect(Date.parse(zPayload.assertedAt)).toBe(Date.parse(offsetPayload.assertedAt));
+    expect(
+      createAttestationPreimage(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, zPayload),
+    ).not.toEqual(
+      createAttestationPreimage(
+        CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+        offsetPayload,
+      ),
+    );
+    expect(signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, zPayload)).not.toEqual(
+      signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, offsetPayload),
+    );
+  });
+
+  it("rejects replay of a legacy v1 approval signature under the v2 payload domain", () => {
+    const legacyDomain =
+      "agent-builder/attest/approval/call-graph-edge/v1" as unknown as RuntimeAttestationDomain;
+    const legacyEnvelope = signPayload(legacyDomain, approvalPayload);
+    expect(
+      verifyEd25519Attestation(
+        CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+        approvalEvidencePayload,
+        legacyEnvelope,
+        TEST_TRUSTED_ATTESTATION_KEY,
+      ),
+    ).toBe(false);
   });
 
   it("is invariant to object insertion order but excludes the envelope from signed bytes", () => {
@@ -470,33 +555,48 @@ describe("runtime attestation canonical preimages and Ed25519 vectors", () => {
   });
 
   it("binds every approval decision and edge field, including an optional reason", () => {
-    const withReason = DecidedCallGraphEdgeApprovalSchema.parse({
+    const approvalWithReason = DecidedCallGraphEdgeApprovalSchema.parse({
       ...approvalPayload,
       reason: "approved for runtime delegation",
     });
-    const envelope = signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, withReason);
-    const topLevelMutations = [
-      { ...withReason, type: "agent_spec" },
-      { ...withReason, artifactId: "approval-other" },
-      { ...withReason, requestedBy: "other-requestor" },
-      { ...withReason, decision: "rejected" as const },
-      { ...withReason, decidedBy: "other-decider" },
-      { ...withReason, decidedAt: "2026-07-23T12:00:01Z" },
-      { ...withReason, reason: "changed reason" },
-      { ...withReason, reason: undefined },
+    const payloadWithReason = CallGraphEdgeApprovalEvidencePayloadSchema.parse({
+      ...approvalEvidencePayload,
+      approval: approvalWithReason,
+    });
+    const envelope = signPayload(
+      CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+      payloadWithReason,
+    );
+    const approvalMutations = [
+      { ...approvalWithReason, type: "agent_spec" },
+      { ...approvalWithReason, artifactId: "approval-other" },
+      { ...approvalWithReason, requestedBy: "other-requestor" },
+      { ...approvalWithReason, decision: "rejected" as const },
+      { ...approvalWithReason, decidedBy: "other-decider" },
+      { ...approvalWithReason, decidedAt: "2026-07-23T12:00:01Z" },
+      { ...approvalWithReason, reason: "changed reason" },
+      { ...approvalWithReason, reason: undefined },
     ];
-    const edgeMutations = Object.keys(withReason.edge).map((key) => ({
-      ...withReason,
+    const edgeMutations = Object.keys(approvalWithReason.edge).map((key) => ({
+      ...approvalWithReason,
       edge: {
-        ...withReason.edge,
+        ...approvalWithReason.edge,
         [key]:
           key === "requiresHumanGate"
-            ? !withReason.edge.requiresHumanGate
-            : `${String(withReason.edge[key as keyof typeof withReason.edge])}-changed`,
+            ? !approvalWithReason.edge.requiresHumanGate
+            : `${String(approvalWithReason.edge[key as keyof typeof approvalWithReason.edge])}-changed`,
       },
     }));
+    const mutatedPayloads = [
+      ...approvalMutations,
+      ...edgeMutations,
+    ].map((approval) => ({ ...payloadWithReason, approval }));
+    mutatedPayloads.push(
+      { ...payloadWithReason, assertedAt: "2026-07-23T12:59:01Z" },
+      { ...payloadWithReason, freshnessTtl: 299 },
+    );
 
-    for (const mutated of [...topLevelMutations, ...edgeMutations]) {
+    for (const mutated of mutatedPayloads) {
       expect(
         verifyEd25519Attestation(
           CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
@@ -574,7 +674,7 @@ describe("runtime attestation canonical preimages and Ed25519 vectors", () => {
   it("prevents approval signatures from replaying across Step-10 domains and vice versa", () => {
     const approvalEnvelope = signPayload(
       CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
-      approvalPayload,
+      approvalEvidencePayload,
     );
     for (const domain of [
       RUNTIME_BINDING_ATTESTATION_DOMAIN,
@@ -584,16 +684,16 @@ describe("runtime attestation canonical preimages and Ed25519 vectors", () => {
       expect(
         verifyEd25519Attestation(
           domain,
-          approvalPayload,
+          approvalEvidencePayload,
           approvalEnvelope,
           TEST_TRUSTED_ATTESTATION_KEY,
         ),
       ).toBe(false);
-      const step10Envelope = signPayload(domain, approvalPayload);
+      const step10Envelope = signPayload(domain, approvalEvidencePayload);
       expect(
         verifyEd25519Attestation(
           CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
-          approvalPayload,
+          approvalEvidencePayload,
           step10Envelope,
           TEST_TRUSTED_ATTESTATION_KEY,
         ),
