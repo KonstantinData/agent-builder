@@ -241,6 +241,50 @@ Two runtime invariants that per-edge fields alone cannot guarantee:
   only spend down from what remains; they cannot top up. Root runs start with an
   approved budget; every hop only consumes it.
 
+### Runtime Harness v0.1 Boundary
+
+Runtime Harness v0.1 is a Data Plane authorization slice, not an execution runtime.
+It consumes an already-approved spec version, matching runtime metadata, approved
+call-graph edge approval artifacts, a call context, and a planned runtime action. It
+returns `allowed` or `blocked` and, for allowed agent-to-agent calls, the derived next
+call context.
+
+The v0.1 executable lifecycle state is deliberately limited to `approved` because the
+Deployment Gate currently stops there and no deployment executor exists yet. Once a
+deployment executor or runtime binding store exists, this boundary should move to
+`deployed`.
+
+Runtime Harness v0.1 enforces:
+
+- full runtime authorization input validation at the boundary
+- tool calls by exact declared `tool_id` and exact scope string only; there is no scope
+  containment inference until a structured scope model exists
+- agent calls by resolved spec declarations and approved `call_graph_edge` artifacts,
+  never by raw caller-supplied edges
+- intent authorization as the intersection of the immutable spec declaration and the
+  approved edge
+- ambiguous matching edge approvals fail-closed, so array order never decides
+  runtime authorization
+- human-gated edges fail-closed
+- call-context validity, including the acting spec as the tail of `call_chain`
+- cycle rejection using the full call chain
+- depth, call-budget, token-budget, and time-budget spend-down without runtime budget
+  increases
+
+Known v0.1 boundaries:
+
+- `AgentSpecRuntimeMetadata` intentionally carries no `content_hash`, so runtime can
+  bind spec content to metadata only by `spec_id` and `version`. The Deployment Gate
+  remains the content-hash-bound approval point.
+- Callee liveness is not checked without callee metadata or a runtime store. The
+  harness authorizes the edge and derived context, not whether the callee is currently
+  suspended, revoked, or live.
+- Parent context spend-down is caller-owned in v0.1. The harness returns the authorized
+  child context for an agent call; it does not mutate or return the parent context for
+  later sibling calls.
+- `current_run_id` is structurally validated but not attested against a runtime store.
+  Run identity attestation belongs to a later runtime binding slice.
+
 ## 11. Drift Detection and Revocation Loop
 
 ```

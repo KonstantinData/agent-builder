@@ -26,6 +26,21 @@ BuilderIntentDraft
 The flow stops at `approved`. Runtime deployment and agent execution belong to the
 future Data Plane and are intentionally outside this package's current scope.
 
+The implemented Data Plane authorization slice is:
+
+```text
+approved AgentSpecContent + matching RuntimeMetadata
+  + CallGraphEdgeApproval artifacts
+  + CallContext
+  + planned RuntimeAction
+  -> Runtime Harness
+  -> allowed or blocked authorization result
+```
+
+The Runtime Harness does not execute tools, call agents, deploy specs, or write
+runtime state. It only proves whether a planned runtime action is authorized by
+already-approved, versioned bindings.
+
 ## What Is Implemented
 
 - Zod schemas for control-plane artifacts:
@@ -54,6 +69,18 @@ future Data Plane and are intentionally outside this package's current scope.
   - enforces separation of duties between requestor and approver
   - emits schema-validated approval evidence and lifecycle transitions
   - fails closed when required evaluation evidence is missing
+- A runtime authorization harness that:
+  - accepts only the v0.1 executable lifecycle state `approved`
+  - validates the full runtime authorization input at the boundary
+  - verifies the acting spec and runtime metadata match by spec ID and version
+  - validates that the acting spec is the tail of the call chain
+  - authorizes tool calls only by exact declared tool/scope matches
+  - authorizes agent calls only through approved call-graph edge artifacts
+  - requires intents to be allowed by both the spec declaration and approved edge
+  - blocks ambiguous matching edge approvals fail-closed
+  - blocks human-gated edges fail-closed
+  - derives the next call context only for allowed agent calls
+  - enforces runtime budget monotonicity across call, token, and time budgets
 - Runtime/control invariants for:
   - executable-boundary checks
   - call-graph cycle detection
@@ -71,12 +98,14 @@ src/
   gate/         Approval decisions and lifecycle transitions
   harness/      Policy and evaluation decisions
   invariants/   Cross-cutting control-plane invariants
+  runtime/      Data-plane authorization and call-context derivation
   schema/       Zod schemas and exported TypeScript types
 tests/
   assembler/    Assembly behavior
   gate/         Deployment-gate behavior
   harness/      Policy decision behavior
   invariants/   Invariant checks
+  runtime/      Runtime authorization behavior
   schema/       Schema validation behavior
 docs/
   architecture/ Control-plane design notes
@@ -131,7 +160,10 @@ This package intentionally keeps several capabilities out of scope:
 - no self-approval by the spec requestor
 - no approval without policy-subject and content-hash binding
 - no runtime budget increases along a call chain
+- no runtime authorization from raw, caller-supplied call-graph edges
+- no runtime authorization from ambiguous matching call-graph edge approvals
+- no tool-scope containment inference without a structured scope model
 
 These constraints are enforced in code where the current prototype has enough local
 context, and documented as control-plane requirements where a future registry,
-deployment executor, or runtime harness is needed.
+deployment executor, or runtime store is needed.
