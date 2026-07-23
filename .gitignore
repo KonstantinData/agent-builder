@@ -4,6 +4,11 @@ dist/
 coverage/
 pnpm-debug.log*
 
+# Local generated learning materials
+/docs/learning/**
+!/docs/learning/pr-001-control-plane-schema-assembler/
+!/docs/learning/pr-001-control-plane-schema-assembler/Secure_Control_Plane_Architecture_Diagram.png
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
