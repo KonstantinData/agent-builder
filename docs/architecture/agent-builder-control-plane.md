@@ -193,7 +193,8 @@ Runtime Binding v0.1 does not start infrastructure, write a registry, execute to
 touch memory, create credentials, perform health checks, or attest runtime identity.
 It records a content-bound runtime binding only. Existing deployment bindings block
 fail-closed; idempotent redeploy/rebind belongs to a later drift/revocation-aware
-slice.
+slice. `ttl` is transported in metadata and binding artifacts in v0.1, but no runtime
+expiry, heartbeat, or liveness logic evaluates it yet.
 
 ## 8. Agent-to-Agent Call Graph
 

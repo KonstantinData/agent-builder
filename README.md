@@ -174,6 +174,7 @@ This package intentionally keeps several capabilities out of scope:
 - no approval without policy-subject and content-hash binding
 - no runtime binding without approved content-hash-bound approval
 - no runtime binding overwrite/redeploy in v0.1
+- no runtime `ttl` expiry enforcement in v0.1
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
 - no runtime authorization from ambiguous matching call-graph edge approvals
