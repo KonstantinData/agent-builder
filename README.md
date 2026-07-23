@@ -76,6 +76,7 @@ already-approved, versioned bindings.
   - authorizes tool calls only by exact declared tool/scope matches
   - authorizes agent calls only through approved call-graph edge artifacts
   - requires intents to be allowed by both the spec declaration and approved edge
+  - blocks ambiguous matching edge approvals fail-closed
   - blocks human-gated edges fail-closed
   - derives the next call context only for allowed agent calls
   - enforces runtime budget monotonicity across call, token, and time budgets
@@ -159,6 +160,7 @@ This package intentionally keeps several capabilities out of scope:
 - no approval without policy-subject and content-hash binding
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
+- no runtime authorization from ambiguous matching call-graph edge approvals
 - no tool-scope containment inference without a structured scope model
 
 These constraints are enforced in code where the current prototype has enough local

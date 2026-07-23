@@ -8,6 +8,7 @@ import type {
   RuntimeAuthorizationResult,
   ToolCallRuntimeAction,
 } from "../schema/runtime-authorization.js";
+import { RuntimeAuthorizationInputSchema } from "../schema/runtime-authorization.js";
 import {
   isRuntimeBudgetMonotonic,
   remainingRuntimeBudgetFromContext,
@@ -88,34 +89,40 @@ function authorizeToolCall(
   return { outcome: "allowed", actionType: "tool_call" };
 }
 
-function findApprovedEdge(input: RuntimeAuthorizationInput, action: AgentCallRuntimeAction) {
+function findApprovedEdges(
+  input: RuntimeAuthorizationInput,
+  action: AgentCallRuntimeAction,
+): AgentCallPolicyEdge[] {
+  const matches: AgentCallPolicyEdge[] = [];
   for (const approval of input.edgeApprovals) {
     if (!isApprovedCallGraphEdgeApproval(approval)) {
       continue;
     }
     const edge = approval.edge;
-    const matches =
+    const matchesEdge =
       edge.callerSpecId === input.spec.specId &&
       edge.callerVersion === input.spec.version &&
       edge.calleeSpecId === action.calleeSpecId &&
       edge.calleeVersionOrChannel === action.calleeVersionOrChannel;
-    if (matches) {
-      return edge;
+    if (matchesEdge) {
+      matches.push(edge);
     }
   }
-  return undefined;
+  return matches;
 }
 
 function deriveNextCallContext(
   callContext: CallContext,
   action: AgentCallRuntimeAction,
+  declaredMaxDepth: number,
+  edgeMaxDepth: number,
   currentRunId: string,
 ): CallContext {
   return {
     rootRunId: callContext.rootRunId,
     parentRunId: currentRunId,
     callChain: [...callContext.callChain, action.calleeSpecId],
-    remainingDepth: callContext.remainingDepth - 1,
+    remainingDepth: Math.min(callContext.remainingDepth - 1, declaredMaxDepth - 1, edgeMaxDepth - 1),
     remainingCallBudget: action.childBudget.callBudget,
     remainingTokenBudget: action.childBudget.tokenBudget,
     remainingTimeBudget: action.childBudget.timeBudget,
@@ -143,8 +150,8 @@ function authorizeAgentCall(
     };
   }
 
-  const edge: AgentCallPolicyEdge | undefined = findApprovedEdge(input, action);
-  if (!edge) {
+  const edges = findApprovedEdges(input, action);
+  if (edges.length === 0) {
     return {
       outcome: "blocked",
       reason: {
@@ -155,11 +162,7 @@ function authorizeAgentCall(
     };
   }
 
-  if (!declaredCall.allowedIntents.includes(action.intent) || !edge.allowedIntents.includes(action.intent)) {
-    return { outcome: "blocked", reason: { type: "call_intent_not_allowed", intent: action.intent } };
-  }
-
-  if (edge.requiresHumanGate) {
+  if (edges.some((edge) => edge.requiresHumanGate)) {
     return {
       outcome: "blocked",
       reason: {
@@ -168,6 +171,23 @@ function authorizeAgentCall(
         calleeVersionOrChannel: action.calleeVersionOrChannel,
       },
     };
+  }
+
+  if (edges.length > 1) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "ambiguous_call_edge_approval",
+        calleeSpecId: action.calleeSpecId,
+        calleeVersionOrChannel: action.calleeVersionOrChannel,
+      },
+    };
+  }
+
+  const edge = edges[0] as AgentCallPolicyEdge;
+
+  if (!declaredCall.allowedIntents.includes(action.intent) || !edge.allowedIntents.includes(action.intent)) {
+    return { outcome: "blocked", reason: { type: "call_intent_not_allowed", intent: action.intent } };
   }
 
   if (detectCycleInChain(callContext.callChain, action.calleeSpecId)) {
@@ -201,7 +221,13 @@ function authorizeAgentCall(
   return {
     outcome: "allowed",
     actionType: "agent_call",
-    nextCallContext: deriveNextCallContext(callContext, action, input.currentRunId),
+    nextCallContext: deriveNextCallContext(
+      callContext,
+      action,
+      declaredCall.maxDepth,
+      edge.maxDepth,
+      input.currentRunId,
+    ),
   };
 }
 
@@ -214,27 +240,41 @@ function authorizeAgentCall(
  * - Runtime metadata intentionally carries no contentHash, so this harness can
  *   bind spec <-> metadata only by specId/version. The gate remains the
  *   contentHash-bound approval point.
+ * - Parent context spend-down is caller-owned in v0.1. This function returns
+ *   the authorized child context; it does not mutate or return the parent
+ *   context for later sibling calls.
  * - Callee liveness is not visible without callee metadata or a runtime store;
  *   this slice authorizes the call edge, not whether the callee is currently
  *   suspended/revoked/live.
+ * - `currentRunId` is structurally validated but not attested against a runtime
+ *   store; run identity attestation belongs to a later runtime binding slice.
  */
 export function authorizeRuntimeAction(
   input: RuntimeAuthorizationInput,
 ): RuntimeAuthorizationResult {
-  const subjectBlock = validateRuntimeSubject(input);
+  const parsed = RuntimeAuthorizationInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      outcome: "blocked",
+      reason: { type: "call_context_invalid", reason: "input_schema_validation_failed" },
+    };
+  }
+  const validatedInput = parsed.data;
+
+  const subjectBlock = validateRuntimeSubject(validatedInput);
   if (subjectBlock) {
     return subjectBlock;
   }
 
-  const callContext = validateCallContext(input);
+  const callContext = validateCallContext(validatedInput);
   if ("outcome" in callContext) {
     return callContext;
   }
 
-  switch (input.action.type) {
+  switch (validatedInput.action.type) {
     case "tool_call":
-      return authorizeToolCall(input, input.action);
+      return authorizeToolCall(validatedInput, validatedInput.action);
     case "agent_call":
-      return authorizeAgentCall(input, input.action, callContext);
+      return authorizeAgentCall(validatedInput, validatedInput.action, callContext);
   }
 }

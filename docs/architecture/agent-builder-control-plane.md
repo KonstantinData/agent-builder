@@ -262,6 +262,8 @@ Runtime Harness v0.1 enforces:
   never by raw caller-supplied edges
 - intent authorization as the intersection of the immutable spec declaration and the
   approved edge
+- ambiguous matching edge approvals fail-closed, so array order never decides
+  runtime authorization
 - human-gated edges fail-closed
 - call-context validity, including the acting spec as the tail of `call_chain`
 - cycle rejection using the full call chain
@@ -276,6 +278,11 @@ Known v0.1 boundaries:
 - Callee liveness is not checked without callee metadata or a runtime store. The
   harness authorizes the edge and derived context, not whether the callee is currently
   suspended, revoked, or live.
+- Parent context spend-down is caller-owned in v0.1. The harness returns the authorized
+  child context for an agent call; it does not mutate or return the parent context for
+  later sibling calls.
+- `current_run_id` is structurally validated but not attested against a runtime store.
+  Run identity attestation belongs to a later runtime binding slice.
 
 ## 11. Drift Detection and Revocation Loop
 

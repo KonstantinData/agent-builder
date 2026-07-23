@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { authorizeRuntimeAction } from "../../src/runtime/authorize-runtime-action.js";
 import { ApprovalArtifactSchema, type ApprovalArtifact } from "../../src/schema/approval-artifact.js";
+import { AgentSpecContentSchema } from "../../src/schema/agent-spec-content.js";
 import { AgentSpecRuntimeMetadataSchema, type AgentSpecRuntimeMetadata } from "../../src/schema/agent-spec-runtime-metadata.js";
 import { CallContextSchema, type CallContext } from "../../src/schema/call-context.js";
 import { SpecIdSchema } from "../../src/schema/common.js";
@@ -139,7 +140,41 @@ describe("authorizeRuntimeAction", () => {
         rootRunId: "run-root",
         parentRunId: "run-current",
         callChain: ["spec-crm-enricher", "spec-web-search"],
-        remainingDepth: 1,
+        remainingDepth: 0,
+        remainingCallBudget: 1,
+        remainingTokenBudget: 5_000,
+        remainingTimeBudget: 10_000,
+      },
+    });
+  });
+
+  it("inherits the tightest depth cap into the child context", () => {
+    const deeperSpec = AgentSpecContentSchema.parse({
+      ...validAgentSpecContent,
+      declaredAgentCalls: [
+        {
+          ...(validAgentSpecContent.declaredAgentCalls[0] as object),
+          maxDepth: 4,
+        },
+      ],
+    });
+    const result = authorizeRuntimeAction(
+      baseInput({
+        spec: deeperSpec,
+        action: agentAction,
+        callContext: callContext({ remainingDepth: 5 }),
+        edgeApprovals: [edgeApproval({ maxDepth: 3 })],
+      }),
+    );
+
+    expect(result).toEqual({
+      outcome: "allowed",
+      actionType: "agent_call",
+      nextCallContext: {
+        rootRunId: "run-root",
+        parentRunId: "run-current",
+        callChain: ["spec-crm-enricher", "spec-web-search"],
+        remainingDepth: 2,
         remainingCallBudget: 1,
         remainingTokenBudget: 5_000,
         remainingTimeBudget: 10_000,
@@ -180,6 +215,27 @@ describe("authorizeRuntimeAction", () => {
     });
   });
 
+  it("blocks ambiguous approved edge artifacts for the same caller/callee join key", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          action: agentAction,
+          edgeApprovals: [
+            edgeApproval({ maxCallsPerRun: 3 }),
+            edgeApproval({ maxCallsPerRun: 2 }),
+          ],
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "ambiguous_call_edge_approval",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+      },
+    });
+  });
+
   it("requires the intent to be allowed by both the spec declaration and the approved edge", () => {
     expect(
       authorizeRuntimeAction(
@@ -197,6 +253,27 @@ describe("authorizeRuntimeAction", () => {
         baseInput({
           action: agentAction,
           edgeApprovals: [edgeApproval({ requiresHumanGate: true })],
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "human_gate_required",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+      },
+    });
+  });
+
+  it("lets a matching human-gated edge fail closed before ambiguous edge handling", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          action: agentAction,
+          edgeApprovals: [
+            edgeApproval({ requiresHumanGate: false }),
+            edgeApproval({ requiresHumanGate: true }),
+          ],
         }),
       ),
     ).toEqual({
@@ -270,6 +347,18 @@ describe("authorizeRuntimeAction", () => {
         type: "budget_increase_forbidden",
         budget: { callBudget: 4, tokenBudget: 5_000, timeBudget: 10_000 },
       },
+    });
+  });
+
+  it("fails closed when the runtime authorization boundary input is structurally invalid", () => {
+    const invalidInput = {
+      ...baseInput(),
+      currentRunId: "",
+    } as RuntimeAuthorizationInput;
+
+    expect(authorizeRuntimeAction(invalidInput)).toEqual({
+      outcome: "blocked",
+      reason: { type: "call_context_invalid", reason: "input_schema_validation_failed" },
     });
   });
 });
