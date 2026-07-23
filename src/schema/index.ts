@@ -5,4 +5,5 @@ export * from "./agent-spec-runtime-metadata.js";
 export * from "./agent-call-policy-edge.js";
 export * from "./trust-domain.js";
 export * from "./approval-artifact.js";
+export * from "./evaluation-outcome.js";
 export * from "./call-context.js";
