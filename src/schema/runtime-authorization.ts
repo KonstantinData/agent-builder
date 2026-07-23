@@ -8,16 +8,17 @@ import {
 import { AgentSpecContentSchema, type AgentSpecContent } from "./agent-spec-content.js";
 import {
   AttestedAgentLifecycleEvidenceSchema,
+  AttestedCallGraphEdgeApprovalSchema,
   AttestedRuntimeBindingEvidenceSchema,
   TrustedAttestationKeysetSchema,
   type AttestationEvidenceKind,
   type AttestedAgentLifecycleEvidence,
+  type AttestedCallGraphEdgeApproval,
   type AttestedRuntimeBindingEvidence,
   type LifecycleEvidenceRole,
   type LifecycleFreshnessCondition,
   type TrustedAttestationKey,
 } from "./runtime-attestation.js";
-import { ApprovalArtifactSchema, type ApprovalArtifact } from "./approval-artifact.js";
 import { CallContextSchema, type CallContext } from "./call-context.js";
 import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
 
@@ -71,7 +72,7 @@ export const RuntimeAuthorizationInputSchema = z
     action: RuntimeActionSchema,
     callContext: CallContextSchema,
     currentRunId: z.string().min(1),
-    edgeApprovals: z.array(ApprovalArtifactSchema),
+    attestedEdgeApprovals: z.array(AttestedCallGraphEdgeApprovalSchema),
   })
   .strict();
 
@@ -83,7 +84,7 @@ export interface RuntimeAuthorizationInput {
   readonly action: RuntimeAction;
   readonly callContext: CallContext;
   readonly currentRunId: string;
-  readonly edgeApprovals: ReadonlyArray<ApprovalArtifact>;
+  readonly attestedEdgeApprovals: ReadonlyArray<AttestedCallGraphEdgeApproval>;
 }
 
 export const _runtimeAuthorizationInputTypeBinding =

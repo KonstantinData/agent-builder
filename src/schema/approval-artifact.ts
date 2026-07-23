@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SpecIdSchema, TrustDomainIdSchema, ToolIdSchema } from "./common.js";
 import { AgentCallPolicyEdgeSchema } from "./agent-call-policy-edge.js";
+import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
 
 /**
  * Section 7: one approval mechanism, multiple artifact types. Every variant
@@ -138,6 +139,23 @@ export const CallGraphEdgeApprovalSchema = z
     edge: AgentCallPolicyEdgeSchema,
   })
   .strict();
+export type CallGraphEdgeApproval = z.infer<typeof CallGraphEdgeApprovalSchema>;
+
+/**
+ * Runtime-consumable call-graph authority is always a completed decision.
+ * This keeps pending workflow state out of the Data Plane and makes the
+ * decision principal and instant mandatory parts of the signed payload.
+ */
+export const DecidedCallGraphEdgeApprovalSchema = CallGraphEdgeApprovalSchema
+  .extend({
+    decision: z.enum(["approved", "rejected"]),
+    decidedBy: z.string().min(1),
+    decidedAt: Rfc3339WithOffsetSchema,
+    reason: z.string().min(1).optional(),
+  });
+export type DecidedCallGraphEdgeApproval = z.infer<
+  typeof DecidedCallGraphEdgeApprovalSchema
+>;
 
 export const TrustDomainRuleApprovalSchema = z
   .object({

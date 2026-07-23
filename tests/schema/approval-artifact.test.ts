@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgentSpecApprovalSchema,
   ApprovalArtifactSchema,
+  DecidedCallGraphEdgeApprovalSchema,
 } from "../../src/schema/approval-artifact.js";
 import { edgeAToB } from "../fixtures/specs.js";
 
@@ -182,5 +183,54 @@ describe("ApprovalArtifactSchema", () => {
       decision: "pending",
     };
     expect(ApprovalArtifactSchema.safeParse(candidate).success).toBe(false);
+  });
+});
+
+describe("DecidedCallGraphEdgeApprovalSchema", () => {
+  const decidedEdgeApproval = {
+    type: "call_graph_edge",
+    artifactId: "approval-edge-decided-001",
+    requestedBy: "builder-agent",
+    decision: "approved",
+    decidedBy: "policy-harness",
+    decidedAt: "2026-07-23T12:00:00Z",
+    edge: edgeAToB,
+  } as const;
+
+  it.each(["approved", "rejected"] as const)(
+    "accepts a complete `%s` runtime decision",
+    (decision) => {
+      expect(
+        DecidedCallGraphEdgeApprovalSchema.safeParse({
+          ...decidedEdgeApproval,
+          decision,
+        }).success,
+      ).toBe(true);
+    },
+  );
+
+  it("rejects pending, incomplete, ambiguous, and non-strict decisions", () => {
+    for (const candidate of [
+      { ...decidedEdgeApproval, decision: "pending" },
+      { ...decidedEdgeApproval, decidedBy: undefined },
+      { ...decidedEdgeApproval, decidedBy: "" },
+      { ...decidedEdgeApproval, decidedAt: undefined },
+      { ...decidedEdgeApproval, decidedAt: "2026-07-23T12:00:00" },
+      { ...decidedEdgeApproval, reason: "" },
+      { ...decidedEdgeApproval, reason: null },
+      { ...decidedEdgeApproval, extra: "field" },
+    ]) {
+      expect(DecidedCallGraphEdgeApprovalSchema.safeParse(candidate).success).toBe(false);
+    }
+  });
+
+  it("accepts explicit offsets and treats an omitted reason as optional", () => {
+    expect(
+      DecidedCallGraphEdgeApprovalSchema.safeParse({
+        ...decidedEdgeApproval,
+        decidedAt: "2026-07-23T14:00:00+02:00",
+        reason: undefined,
+      }).success,
+    ).toBe(true);
   });
 });

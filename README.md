@@ -35,10 +35,10 @@ The implemented Data Plane authorization slice is:
 approved AgentSpecContent
   + AttestedRuntimeBindingEvidence
   + required AttestedAgentLifecycleEvidence for the acting spec
-  + CallGraphEdgeApproval artifacts
+  + AttestedCallGraphEdgeApproval artifacts
   + CallContext
   + planned RuntimeAction
-  + TrustedRuntimeAuthorizationContext (authorization time + public keyset)
+  + TrustedRuntimeAuthorizationContext (authorization time + evidence-scoped public keyset)
   + AttestedAgentLifecycleEvidence for agent-call targets
   -> Runtime Harness
   -> allowed or blocked authorization result
@@ -86,8 +86,10 @@ already-approved, versioned bindings.
   - never starts real infrastructure or writes runtime state
 - A runtime authorization harness that:
   - validates the full runtime authorization input at the boundary
-  - requires an explicit trusted authorization instant and Ed25519 public-key set
-    with no system-clock or caller-key fallback
+  - requires an explicit trusted authorization instant and evidence-scoped Ed25519
+    public-key set with no system-clock or caller-key fallback
+  - requires every trusted key to declare the exact evidence kinds it may verify;
+    an absent or wrongly scoped key is indistinguishably fail-closed
   - verifies a domain-separated Ed25519 signature over the complete
     `RuntimeBindingArtifact`
   - recomputes the presented immutable spec content hash and requires it to match
@@ -103,12 +105,20 @@ already-approved, versioned bindings.
   - rejects future-dated lifecycle assertions without clock-skew grace
   - validates that the acting spec is the tail of the call chain
   - authorizes tool calls only by exact declared tool/scope matches
-  - authorizes agent calls only through approved call-graph edge artifacts
+  - authorizes agent calls only through complete, decided, Ed25519-attested
+    call-graph edge approval artifacts
+  - prefilters edge evidence only by the signed caller/callee/version/channel subject
+    plus the acting spec's verified caller trust domain, then verifies every selected
+    entry before reading its decision or policy fields
+  - ignores cryptographically invalid but subject-irrelevant edge evidence while
+    failing closed on every selected entry in input order
   - requires intents to be allowed by both the spec declaration and approved edge
   - matches the opaque `versionOrChannel` lifecycle subject exactly without resolving
     channels
   - ignores structurally valid callee lifecycle evidence for tool calls while still
     rejecting malformed evidence at the input boundary
+  - likewise ignores structurally valid edge approval evidence for tool calls without
+    inspecting its key, signature, decision, or policy fields
   - blocks ambiguous matching edge approvals fail-closed
   - blocks human-gated edges fail-closed
   - derives the next call context only for allowed agent calls
@@ -203,7 +213,9 @@ This package intentionally keeps several capabilities out of scope:
   but cannot eliminate the post-assertion revocation window
 - no clock-skew grace for future-dated lifecycle evidence in v0.1
 - no channel resolution or process-liveness claim from lifecycle evidence
-- no attestation of caller-supplied call-graph approval artifacts until implementation Step 11
+- no proof that a presented, validly attested call-graph approval is the latest
+  canonical decision, has not been revoked, or is protected against replay; approval
+  versioning, revocation lookup, and authority freshness remain future slices
 - no attestation of call context, run identity, cycle chain, or spend-down state until
   implementation Step 12
 - no runtime budget increases along a call chain

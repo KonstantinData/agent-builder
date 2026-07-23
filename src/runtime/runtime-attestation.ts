@@ -6,6 +6,7 @@ import type {
 } from "../schema/runtime-attestation.js";
 import {
   ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
+  CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
 } from "../schema/runtime-attestation.js";
@@ -14,12 +15,13 @@ export const RUNTIME_ATTESTATION_DOMAINS = [
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
   ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
+  CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
 ] as const;
 export type RuntimeAttestationDomain = (typeof RUNTIME_ATTESTATION_DOMAINS)[number];
 
 /**
  * The envelope is deliberately excluded. Only the strict, schema-validated
- * payload is canonicalized and prefixed with its role-specific versioned
+ * payload is canonicalized and prefixed with its evidence-specific versioned
  * domain tag before Ed25519 verification.
  */
 export function createAttestationPreimage(

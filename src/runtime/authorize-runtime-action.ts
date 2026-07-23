@@ -3,17 +3,18 @@ import { detectCycleInChain } from "../invariants/cycle-detection.js";
 import type { AgentSpecContent } from "../schema/agent-spec-content.js";
 import type { CallContext } from "../schema/call-context.js";
 import type { AgentCallPolicyEdge } from "../schema/agent-call-policy-edge.js";
-import type { ApprovalArtifact } from "../schema/approval-artifact.js";
 import type { RuntimeBindingArtifact } from "../schema/runtime-binding.js";
 import type {
   AgentLifecycleEvidencePayload,
   AttestationEnvelope,
   AttestationEvidenceKind,
   AttestedAgentLifecycleEvidence,
+  AttestedCallGraphEdgeApproval,
   LifecycleEvidenceRole,
 } from "../schema/runtime-attestation.js";
 import {
   ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
+  CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
 } from "../schema/runtime-attestation.js";
@@ -45,14 +46,6 @@ export const RUNTIME_EXECUTABLE_STATES = ["deployed"] as const;
  * future policy evolution are distinct.
  */
 export const CALLEE_CALLABLE_STATES = ["deployed"] as const;
-type CallGraphEdgeApproval = Extract<ApprovalArtifact, { readonly type: "call_graph_edge" }>;
-
-function isApprovedCallGraphEdgeApproval(
-  approval: ApprovalArtifact,
-): approval is CallGraphEdgeApproval & { readonly decision: "approved" } {
-  return approval.type === "call_graph_edge" && approval.decision === "approved";
-}
-
 function isExecutableState(state: string): boolean {
   return RUNTIME_EXECUTABLE_STATES.some((executableState) => executableState === state);
 }
@@ -68,7 +61,11 @@ function validateAttestation(
   envelope: AttestationEnvelope,
   context: TrustedRuntimeAuthorizationContext,
 ): RuntimeAuthorizationResult | undefined {
-  const trustedKey = context.attestationKeys.find((key) => key.keyId === envelope.keyId);
+  const trustedKey = context.attestationKeys.find(
+    (key) =>
+      key.keyId === envelope.keyId &&
+      key.allowedEvidenceKinds.some((allowedKind) => allowedKind === evidenceKind),
+  );
   if (trustedKey === undefined) {
     return {
       outcome: "blocked",
@@ -300,23 +297,21 @@ function authorizeToolCall(
   return { outcome: "allowed", actionType: "tool_call" };
 }
 
-function findApprovedEdges(
+function selectRelevantEdgeApprovals(
   input: RuntimeAuthorizationInput,
   action: AgentCallRuntimeAction,
-): AgentCallPolicyEdge[] {
-  const matches: AgentCallPolicyEdge[] = [];
-  for (const approval of input.edgeApprovals) {
-    if (!isApprovedCallGraphEdgeApproval(approval)) {
-      continue;
-    }
-    const edge = approval.edge;
+): AttestedCallGraphEdgeApproval[] {
+  const matches: AttestedCallGraphEdgeApproval[] = [];
+  for (const approvalEvidence of input.attestedEdgeApprovals) {
+    const edge = approvalEvidence.payload.edge;
     const matchesEdge =
       edge.callerSpecId === input.spec.specId &&
       edge.callerVersion === input.spec.version &&
       edge.calleeSpecId === action.calleeSpecId &&
-      edge.calleeVersionOrChannel === action.calleeVersionOrChannel;
+      edge.calleeVersionOrChannel === action.calleeVersionOrChannel &&
+      edge.trustDomainId === input.spec.trustDomainId;
     if (matchesEdge) {
-      matches.push(edge);
+      matches.push(approvalEvidence);
     }
   }
   return matches;
@@ -419,8 +414,24 @@ function authorizeAgentCall(
     };
   }
 
-  const edges = findApprovedEdges(input, action);
-  if (edges.length === 0) {
+  const relevantApprovalEvidence = selectRelevantEdgeApprovals(input, action);
+  for (const approvalEvidence of relevantApprovalEvidence) {
+    const attestationBlock = validateAttestation(
+      "call_graph_edge_approval",
+      CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+      approvalEvidence.payload,
+      approvalEvidence.attestation,
+      context,
+    );
+    if (attestationBlock) {
+      return attestationBlock;
+    }
+  }
+
+  const approvedEdges = relevantApprovalEvidence
+    .filter((approvalEvidence) => approvalEvidence.payload.decision === "approved")
+    .map((approvalEvidence) => approvalEvidence.payload.edge);
+  if (approvedEdges.length === 0) {
     return {
       outcome: "blocked",
       reason: {
@@ -431,7 +442,7 @@ function authorizeAgentCall(
     };
   }
 
-  if (edges.some((edge) => edge.requiresHumanGate)) {
+  if (approvedEdges.some((edge) => edge.requiresHumanGate)) {
     return {
       outcome: "blocked",
       reason: {
@@ -442,7 +453,7 @@ function authorizeAgentCall(
     };
   }
 
-  if (edges.length > 1) {
+  if (approvedEdges.length > 1) {
     return {
       outcome: "blocked",
       reason: {
@@ -453,7 +464,7 @@ function authorizeAgentCall(
     };
   }
 
-  const edge = edges[0] as AgentCallPolicyEdge;
+  const edge = approvedEdges[0] as AgentCallPolicyEdge;
 
   if (!declaredCall.allowedIntents.includes(action.intent) || !edge.allowedIntents.includes(action.intent)) {
     return { outcome: "blocked", reason: { type: "call_intent_not_allowed", intent: action.intent } };
@@ -521,12 +532,16 @@ function authorizeAgentCall(
  * - Acting and callee lifecycle claims are Ed25519-attested and bounded by a
  *   maximum 300-second freshness lease. Freshness limits replay but does not
  *   prove synchronous current state after the assertion instant.
+ * - Agent-call authority comes only from complete, decided, Ed25519-attested
+ *   call-graph edge approval artifacts. Every selected artifact is verified
+ *   before its decision or policy fields are used.
  * - Parent context spend-down is caller-owned in v0.1. This function returns
  *   the authorized child context; it does not mutate or return the parent
  *   context for later sibling calls. Call context, run identity, cycle chain,
  *   and remaining budgets are not attested until a later slice.
- * - Call-graph approval artifacts remain structurally validated but unsigned;
- *   approval provenance attestation belongs to the next control-plane slice.
+ * - Edge approval attestation proves presented origin and integrity, not that
+ *   the artifact is the latest canonical decision, remains unrevoked, or is
+ *   protected from replay. decidedAt is not an authority-freshness lease.
  * - External signing, private-key custody, KMS/HSM, key revocation, nonce replay
  *   storage, synchronous lifecycle lookup, process liveness, channel resolution,
  *   and real execution remain out of scope.
