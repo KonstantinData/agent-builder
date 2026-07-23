@@ -3,11 +3,13 @@ import { classifyDelta, type DeltaClassification } from "../invariants/classify-
 import { checkTrustDomainCompliance } from "./trust-domain-check.js";
 import { checkForbiddenToolCombinations } from "./forbidden-combinations.js";
 import { checkEvaluationOutcome } from "./evaluation-check.js";
+import { EvaluationOutcomeSchema } from "../schema/evaluation-outcome.js";
 import type {
   EvaluationOutcome,
   PolicyContext,
   PolicyEvaluationResult,
   PolicyRejectionReason,
+  PolicySubject,
 } from "./harness-types.js";
 
 /**
@@ -24,6 +26,14 @@ export function evaluatePolicy(
   context: PolicyContext,
   evalOutcome?: EvaluationOutcome,
 ): PolicyEvaluationResult {
+  // Bind the verdict to exactly this spec/content up front, so every return
+  // path below carries an immutable subject the deployment gate can verify.
+  const subject: PolicySubject = {
+    specId: candidate.specId,
+    version: candidate.version,
+    contentHash: candidate.contentHash,
+  };
+
   const reasons: PolicyRejectionReason[] = [
     ...checkTrustDomainCompliance(candidate, context.trustDomains),
     ...checkForbiddenToolCombinations(candidate, context.forbiddenToolCombinations),
@@ -44,7 +54,7 @@ export function evaluatePolicy(
   }
 
   if (reasons.length > 0) {
-    return { outcome: "rejected", reasons };
+    return { outcome: "rejected", subject, reasons };
   }
 
   // A brand-new spec always needs evaluation, no exception for
@@ -62,16 +72,30 @@ export function evaluatePolicy(
   // — that would let a caller pass in a known-bad outcome and still get
   // approved_pending_gate.
   if (evalOutcome) {
+    // Fail-closed: a schema-invalid outcome (NaN/out-of-range score, empty
+    // suiteRef) is rejected structurally — never trusted into the
+    // `score < passThreshold` comparison, never retained as evidence.
+    if (!EvaluationOutcomeSchema.safeParse(evalOutcome).success) {
+      return {
+        outcome: "rejected",
+        subject,
+        reasons: [
+          { type: "evaluation_outcome_invalid", suiteRef: evalOutcome.suiteRef, score: evalOutcome.score },
+        ],
+      };
+    }
     const evalReasons = checkEvaluationOutcome(candidate, evalOutcome);
     if (evalReasons.length > 0) {
-      return { outcome: "rejected", reasons: evalReasons };
+      // Retain the (valid) outcome that caused the rejection as held evidence.
+      return { outcome: "rejected", subject, reasons: evalReasons, evaluation: evalOutcome };
     }
-    return { outcome: "approved_pending_gate", delta };
+    // Retain the outcome that was actually checked as held evidence.
+    return { outcome: "approved_pending_gate", subject, delta, evaluation: evalOutcome };
   }
 
   if (evaluationNeeded) {
-    return { outcome: "evaluation_required" };
+    return { outcome: "evaluation_required", subject };
   }
 
-  return { outcome: "approved_pending_gate", delta };
+  return { outcome: "approved_pending_gate", subject, delta };
 }
