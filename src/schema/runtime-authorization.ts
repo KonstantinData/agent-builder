@@ -73,6 +73,7 @@ export const _runtimeAuthorizationInputTypeBinding =
   RuntimeAuthorizationInputSchema satisfies z.ZodType<RuntimeAuthorizationInput>;
 
 export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
+  "input_invalid",
   "runtime_state_not_executable",
   "runtime_subject_mismatch",
   "call_context_invalid",
@@ -96,6 +97,7 @@ export type RuntimeAuthorizationBlockReasonCode = z.infer<
 >;
 
 export type RuntimeAuthorizationBlockReason =
+  | { readonly type: "input_invalid"; readonly reason: string }
   | { readonly type: "runtime_state_not_executable"; readonly state: string }
   | { readonly type: "runtime_subject_mismatch"; readonly specId: string; readonly version: string }
   | { readonly type: "call_context_invalid"; readonly reason: string }

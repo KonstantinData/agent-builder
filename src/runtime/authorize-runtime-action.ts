@@ -1,5 +1,5 @@
 import { detectCycleInChain } from "../invariants/cycle-detection.js";
-import { CallContextSchema, type CallContext } from "../schema/call-context.js";
+import type { CallContext } from "../schema/call-context.js";
 import type { AgentCallPolicyEdge } from "../schema/agent-call-policy-edge.js";
 import type { ApprovalArtifact } from "../schema/approval-artifact.js";
 import type {
@@ -50,15 +50,7 @@ function validateRuntimeSubject(input: RuntimeAuthorizationInput): RuntimeAuthor
 }
 
 function validateCallContext(input: RuntimeAuthorizationInput): CallContext | RuntimeAuthorizationResult {
-  const parsed = CallContextSchema.safeParse(input.callContext);
-  if (!parsed.success) {
-    return {
-      outcome: "blocked",
-      reason: { type: "call_context_invalid", reason: "schema_validation_failed" },
-    };
-  }
-
-  const tail = parsed.data.callChain.at(-1);
+  const tail = input.callContext.callChain.at(-1);
   if (tail !== input.spec.specId) {
     return {
       outcome: "blocked",
@@ -66,7 +58,7 @@ function validateCallContext(input: RuntimeAuthorizationInput): CallContext | Ru
     };
   }
 
-  return parsed.data;
+  return input.callContext;
 }
 
 function authorizeToolCall(
@@ -256,7 +248,7 @@ export function authorizeRuntimeAction(
   if (!parsed.success) {
     return {
       outcome: "blocked",
-      reason: { type: "call_context_invalid", reason: "input_schema_validation_failed" },
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
     };
   }
   const validatedInput = parsed.data;

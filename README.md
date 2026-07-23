@@ -71,6 +71,7 @@ already-approved, versioned bindings.
   - fails closed when required evaluation evidence is missing
 - A runtime authorization harness that:
   - accepts only the v0.1 executable lifecycle state `approved`
+  - validates the full runtime authorization input at the boundary
   - verifies the acting spec and runtime metadata match by spec ID and version
   - validates that the acting spec is the tail of the call chain
   - authorizes tool calls only by exact declared tool/scope matches

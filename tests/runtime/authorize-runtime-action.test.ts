@@ -358,7 +358,7 @@ describe("authorizeRuntimeAction", () => {
 
     expect(authorizeRuntimeAction(invalidInput)).toEqual({
       outcome: "blocked",
-      reason: { type: "call_context_invalid", reason: "input_schema_validation_failed" },
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
     });
   });
 });

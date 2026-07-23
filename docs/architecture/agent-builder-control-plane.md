@@ -256,6 +256,7 @@ deployment executor or runtime binding store exists, this boundary should move t
 
 Runtime Harness v0.1 enforces:
 
+- full runtime authorization input validation at the boundary
 - tool calls by exact declared `tool_id` and exact scope string only; there is no scope
   containment inference until a structured scope model exists
 - agent calls by resolved spec declarations and approved `call_graph_edge` artifacts,
