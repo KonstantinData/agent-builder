@@ -2,14 +2,20 @@ import { describe, expect, it } from "vitest";
 import { authorizeRuntimeAction as authorizeRuntimeActionWithContext } from "../../src/runtime/authorize-runtime-action.js";
 import { ApprovalArtifactSchema, type ApprovalArtifact } from "../../src/schema/approval-artifact.js";
 import { AgentSpecContentSchema } from "../../src/schema/agent-spec-content.js";
-import { AgentSpecRuntimeMetadataSchema, type AgentSpecRuntimeMetadata } from "../../src/schema/agent-spec-runtime-metadata.js";
+import {
+  AgentSpecRuntimeMetadataSchema,
+  LifecycleStateSchema,
+  type AgentSpecRuntimeMetadata,
+} from "../../src/schema/agent-spec-runtime-metadata.js";
 import { CallContextSchema, type CallContext } from "../../src/schema/call-context.js";
 import { SpecIdSchema } from "../../src/schema/common.js";
 import {
+  CalleeLifecycleEvidenceSchema,
   type AgentCallRuntimeAction,
   type RuntimeAuthorizationInput,
   type TrustedRuntimeAuthorizationContext,
 } from "../../src/schema/runtime-authorization.js";
+import { CALLEE_CALLABLE_STATES } from "../../src/runtime/authorize-runtime-action.js";
 import { validAgentSpecContent } from "../fixtures/specs.js";
 
 function metadataInState(state: string): AgentSpecRuntimeMetadata {
@@ -107,9 +113,56 @@ const agentAction = {
   childBudget: { callBudget: 1, tokenBudget: 5_000, timeBudget: 10_000 },
 } satisfies AgentCallRuntimeAction;
 
+function calleeLifecycleEvidence(overrides: Record<string, unknown> = {}) {
+  return CalleeLifecycleEvidenceSchema.parse({
+    calleeSpecId: "spec-web-search",
+    calleeVersionOrChannel: "1.0.0",
+    state: "deployed",
+    ...overrides,
+  });
+}
+
+function agentInput(overrides: Partial<RuntimeAuthorizationInput> = {}): RuntimeAuthorizationInput {
+  return baseInput({
+    action: agentAction,
+    calleeLifecycleEvidence: calleeLifecycleEvidence(),
+    ...overrides,
+  });
+}
+
 describe("authorizeRuntimeAction", () => {
   it("allows an exact declared tool call without executing it", () => {
     expect(authorizeRuntimeAction(baseInput())).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it("ignores valid callee lifecycle evidence for tool calls", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          calleeLifecycleEvidence: calleeLifecycleEvidence({
+            calleeSpecId: "spec-foreign",
+            calleeVersionOrChannel: "stable",
+            state: "revoked",
+          }),
+        }),
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it("rejects structurally invalid callee lifecycle evidence even for tool calls", () => {
+    const input = {
+      ...baseInput(),
+      calleeLifecycleEvidence: {
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+        state: "unknown",
+      },
+    } as unknown as RuntimeAuthorizationInput;
+
+    expect(authorizeRuntimeAction(input)).toEqual({
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+    });
   });
 
   it.each(["draft", "in_review", "approved", "suspended", "revoked", "rejected"])(
@@ -306,11 +359,11 @@ describe("authorizeRuntimeAction", () => {
     });
   });
 
-  it("is deterministic and does not mutate trusted authorization context", () => {
+  it("is deterministic and does not mutate input, callee evidence, metadata, or context", () => {
     const context: TrustedRuntimeAuthorizationContext = {
       authorizationTime: "2026-07-23T13:00:00Z",
     };
-    const input = baseInput();
+    const input = agentInput();
     const snapshot = structuredClone(context);
     const inputSnapshot = structuredClone(input);
 
@@ -371,7 +424,7 @@ describe("authorizeRuntimeAction", () => {
   });
 
   it("allows an approved agent call and returns the authorized next CallContext", () => {
-    const result = authorizeRuntimeAction(baseInput({ action: agentAction }));
+    const result = authorizeRuntimeAction(agentInput());
     expect(result).toEqual({
       outcome: "allowed",
       actionType: "agent_call",
@@ -387,6 +440,214 @@ describe("authorizeRuntimeAction", () => {
     });
   });
 
+  it("requires exact-subject callee lifecycle evidence for agent calls", () => {
+    expect(authorizeRuntimeAction(baseInput({ action: agentAction }))).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "callee_lifecycle_evidence_missing",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+      },
+    });
+
+    for (const evidence of [
+      calleeLifecycleEvidence({ calleeSpecId: "spec-other" }),
+      calleeLifecycleEvidence({ calleeVersionOrChannel: "stable" }),
+      calleeLifecycleEvidence({ calleeSpecId: "spec-other", state: "revoked" }),
+    ]) {
+      expect(authorizeRuntimeAction(agentInput({ calleeLifecycleEvidence: evidence }))).toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "callee_lifecycle_subject_mismatch",
+          calleeSpecId: "spec-web-search",
+          calleeVersionOrChannel: "1.0.0",
+        },
+      });
+    }
+  });
+
+  it("rejects structurally invalid agent-call evidence before semantic guards", () => {
+    const input = {
+      ...agentInput(),
+      calleeLifecycleEvidence: {
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+        state: "not-a-lifecycle-state",
+      },
+    } as unknown as RuntimeAuthorizationInput;
+
+    expect(authorizeRuntimeAction(input)).toEqual({
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+    });
+  });
+
+  const nonCallableStates = LifecycleStateSchema.options.filter(
+    (state) => !CALLEE_CALLABLE_STATES.some((callableState) => callableState === state),
+  );
+
+  it("keeps callee callability conceptually separate and limited to deployed", () => {
+    expect(CALLEE_CALLABLE_STATES).toEqual(["deployed"]);
+    expect(nonCallableStates).toEqual([
+      "draft",
+      "in_review",
+      "approved",
+      "suspended",
+      "revoked",
+      "rejected",
+    ]);
+  });
+
+  it.each(nonCallableStates)("blocks callee lifecycle state `%s` as not callable", (state) => {
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ calleeLifecycleEvidence: calleeLifecycleEvidence({ state }) }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "callee_state_not_callable",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+        state,
+      },
+    });
+  });
+
+  it("preserves global and agent-call guard precedence around callee lifecycle", () => {
+    const revokedEvidence = calleeLifecycleEvidence({ state: "revoked" });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ calleeLifecycleEvidence: revokedEvidence }),
+        { authorizationTime: "2026-07-23T14:00:00Z" },
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
+    });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          callContext: callContext({ callChain: ["spec-other"] }),
+          calleeLifecycleEvidence: revokedEvidence,
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "call_context_invalid", reason: "acting_spec_not_call_chain_tail" },
+    });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ edgeApprovals: [], calleeLifecycleEvidence: revokedEvidence }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "call_edge_not_approved",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+      },
+    });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          edgeApprovals: [edgeApproval({ allowedIntents: ["delegate"] })],
+          calleeLifecycleEvidence: revokedEvidence,
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "call_intent_not_allowed", intent: "query" },
+    });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          callContext: callContext({
+            callChain: ["spec-web-search", "spec-crm-enricher"],
+          }),
+          calleeLifecycleEvidence: revokedEvidence,
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "cycle_detected", calleeSpecId: "spec-web-search" },
+    });
+
+    for (const overrides of [
+      { callContext: callContext({ remainingDepth: 0 }) },
+      { callContext: callContext({ remainingCallBudget: 0 }) },
+      {
+        action: {
+          ...agentAction,
+          childBudget: { callBudget: 4, tokenBudget: 25_000, timeBudget: 40_000 },
+        },
+      },
+    ]) {
+      expect(
+        authorizeRuntimeAction(
+          agentInput({ ...overrides, calleeLifecycleEvidence: revokedEvidence }),
+        ),
+      ).toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "callee_state_not_callable",
+          calleeSpecId: "spec-web-search",
+          calleeVersionOrChannel: "1.0.0",
+          state: "revoked",
+        },
+      });
+    }
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          edgeApprovals: [edgeApproval({ requiresHumanGate: true })],
+          calleeLifecycleEvidence: revokedEvidence,
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "human_gate_required" } });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          edgeApprovals: [edgeApproval(), edgeApproval({ maxCallsPerRun: 2 })],
+          calleeLifecycleEvidence: revokedEvidence,
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "ambiguous_call_edge_approval" } });
+  });
+
+  it("treats version-or-channel as an exact opaque lifecycle-evidence key", () => {
+    const stableAction = { ...agentAction, calleeVersionOrChannel: "stable" };
+    const stableSpec = AgentSpecContentSchema.parse({
+      ...validAgentSpecContent,
+      declaredAgentCalls: [
+        {
+          ...(validAgentSpecContent.declaredAgentCalls[0] as object),
+          calleeVersionOrChannel: "stable",
+        },
+      ],
+    });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          spec: stableSpec,
+          action: stableAction,
+          edgeApprovals: [edgeApproval({ calleeVersionOrChannel: "stable" })],
+          calleeLifecycleEvidence: calleeLifecycleEvidence({
+            calleeVersionOrChannel: "stable",
+          }),
+        }),
+      ),
+    ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
+  });
+
   it("inherits the tightest depth cap into the child context", () => {
     const deeperSpec = AgentSpecContentSchema.parse({
       ...validAgentSpecContent,
@@ -398,9 +659,8 @@ describe("authorizeRuntimeAction", () => {
       ],
     });
     const result = authorizeRuntimeAction(
-      baseInput({
+      agentInput({
         spec: deeperSpec,
-        action: agentAction,
         callContext: callContext({ remainingDepth: 5 }),
         edgeApprovals: [edgeApproval({ maxDepth: 3 })],
       }),
@@ -543,12 +803,12 @@ describe("authorizeRuntimeAction", () => {
 
   it("blocks exhausted depth and call budget before deriving a child context", () => {
     expect(
-      authorizeRuntimeAction(baseInput({ action: agentAction, callContext: callContext({ remainingDepth: 0 }) })),
+      authorizeRuntimeAction(agentInput({ callContext: callContext({ remainingDepth: 0 }) })),
     ).toEqual({ outcome: "blocked", reason: { type: "depth_exhausted" } });
 
     expect(
       authorizeRuntimeAction(
-        baseInput({
+        agentInput({
           action: {
             ...agentAction,
             childBudget: { ...agentAction.childBudget, callBudget: 0 },
@@ -562,7 +822,7 @@ describe("authorizeRuntimeAction", () => {
   it("blocks child runtime budgets that exceed caller remaining budget or edge/spec call limits", () => {
     expect(
       authorizeRuntimeAction(
-        baseInput({
+        agentInput({
           action: { ...agentAction, childBudget: { callBudget: 1, tokenBudget: 25_000, timeBudget: 10_000 } },
         }),
       ),
@@ -576,7 +836,7 @@ describe("authorizeRuntimeAction", () => {
 
     expect(
       authorizeRuntimeAction(
-        baseInput({
+        agentInput({
           action: { ...agentAction, childBudget: { callBudget: 4, tokenBudget: 5_000, timeBudget: 10_000 } },
         }),
       ),

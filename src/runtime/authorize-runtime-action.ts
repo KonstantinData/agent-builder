@@ -5,6 +5,7 @@ import type { AgentCallPolicyEdge } from "../schema/agent-call-policy-edge.js";
 import type { ApprovalArtifact } from "../schema/approval-artifact.js";
 import type {
   AgentCallRuntimeAction,
+  CalleeLifecycleEvidence,
   RuntimeAuthorizationInput,
   RuntimeAuthorizationResult,
   TrustedRuntimeAuthorizationContext,
@@ -20,6 +21,13 @@ import {
 } from "./runtime-budget.js";
 
 export const RUNTIME_EXECUTABLE_STATES = ["deployed"] as const;
+
+/**
+ * Callee callability is intentionally modeled separately from caller
+ * executability. The state sets are currently identical, but the concepts and
+ * future policy evolution are distinct.
+ */
+export const CALLEE_CALLABLE_STATES = ["deployed"] as const;
 type CallGraphEdgeApproval = Extract<ApprovalArtifact, { readonly type: "call_graph_edge" }>;
 
 function isApprovedCallGraphEdgeApproval(
@@ -30,6 +38,10 @@ function isApprovedCallGraphEdgeApproval(
 
 function isExecutableState(state: string): boolean {
   return RUNTIME_EXECUTABLE_STATES.some((executableState) => executableState === state);
+}
+
+function isCallableState(state: string): boolean {
+  return CALLEE_CALLABLE_STATES.some((callableState) => callableState === state);
 }
 
 function validateRuntimeBindingValidity(
@@ -178,6 +190,50 @@ function deriveNextCallContext(
   };
 }
 
+function validateCalleeLifecycleEvidence(
+  evidence: CalleeLifecycleEvidence | undefined,
+  action: AgentCallRuntimeAction,
+): RuntimeAuthorizationResult | undefined {
+  if (evidence === undefined) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "callee_lifecycle_evidence_missing",
+        calleeSpecId: action.calleeSpecId,
+        calleeVersionOrChannel: action.calleeVersionOrChannel,
+      },
+    };
+  }
+
+  if (
+    evidence.calleeSpecId !== action.calleeSpecId ||
+    evidence.calleeVersionOrChannel !== action.calleeVersionOrChannel
+  ) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "callee_lifecycle_subject_mismatch",
+        calleeSpecId: action.calleeSpecId,
+        calleeVersionOrChannel: action.calleeVersionOrChannel,
+      },
+    };
+  }
+
+  if (!isCallableState(evidence.state)) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "callee_state_not_callable",
+        calleeSpecId: action.calleeSpecId,
+        calleeVersionOrChannel: action.calleeVersionOrChannel,
+        state: evidence.state,
+      },
+    };
+  }
+
+  return undefined;
+}
+
 function authorizeAgentCall(
   input: RuntimeAuthorizationInput,
   action: AgentCallRuntimeAction,
@@ -243,6 +299,14 @@ function authorizeAgentCall(
     return { outcome: "blocked", reason: { type: "cycle_detected", calleeSpecId: action.calleeSpecId } };
   }
 
+  const calleeLifecycleBlock = validateCalleeLifecycleEvidence(
+    input.calleeLifecycleEvidence,
+    action,
+  );
+  if (calleeLifecycleBlock) {
+    return calleeLifecycleBlock;
+  }
+
   const effectiveDepth = Math.min(callContext.remainingDepth, declaredCall.maxDepth, edge.maxDepth);
   if (effectiveDepth <= 0) {
     return { outcome: "blocked", reason: { type: "depth_exhausted" } };
@@ -295,9 +359,10 @@ function authorizeAgentCall(
  * - Parent context spend-down is caller-owned in v0.1. This function returns
  *   the authorized child context; it does not mutate or return the parent
  *   context for later sibling calls.
- * - Callee liveness is not visible without callee metadata or a runtime store;
- *   this slice authorizes the call edge, not whether the callee is currently
- *   suspended/revoked/live.
+ * - Agent calls require exact-subject lifecycle evidence whose presented state
+ *   is callable. The evidence is caller-supplied and not attested or fresh, so
+ *   this validates structural consistency rather than current lifecycle truth.
+ *   Process liveness and channel resolution remain out of scope.
  * - `currentRunId` is structurally validated but not attested against a runtime
  *   store; run identity attestation belongs to a later runtime binding slice.
  */

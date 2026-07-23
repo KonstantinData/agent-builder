@@ -37,6 +37,7 @@ approved AgentSpecContent + matching RuntimeMetadata
   + CallContext
   + planned RuntimeAction
   + TrustedRuntimeAuthorizationContext
+  + CalleeLifecycleEvidence for agent calls
   -> Runtime Harness
   -> allowed or blocked authorization result
 ```
@@ -93,6 +94,12 @@ already-approved, versioned bindings.
   - authorizes tool calls only by exact declared tool/scope matches
   - authorizes agent calls only through approved call-graph edge artifacts
   - requires intents to be allowed by both the spec declaration and approved edge
+  - requires exact-subject callee lifecycle evidence for agent calls and treats only
+    `deployed` as callable
+  - treats callee callability as distinct from caller executability and matches the
+    opaque `calleeVersionOrChannel` key without resolving channels
+  - ignores valid callee lifecycle evidence for tool calls while still rejecting any
+    structurally invalid evidence at the input boundary
   - blocks ambiguous matching edge approvals fail-closed
   - blocks human-gated edges fail-closed
   - derives the next call context only for allowed agent calls
@@ -183,6 +190,8 @@ This package intentionally keeps several capabilities out of scope:
 - no metadata mutation or lifecycle transition when a runtime binding expires
 - no process-liveness claim without a heartbeat, runtime store, and runtime lookup
 - no claim that supplied runtime-binding evidence is authentic or untampered
+- no claim that supplied callee lifecycle evidence is authentic, fresh, or current
+- no callee channel resolution, binding TTL check, or content-hash check in Step 9
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
 - no runtime authorization from ambiguous matching call-graph edge approvals
