@@ -170,6 +170,31 @@ This keeps audit, review, and human-gate logic unified regardless of what is bei
 approved, instead of building parallel approval systems for specs and for call-graph
 edges.
 
+### Runtime Binding / Deployment Executor Boundary v0.1
+
+Runtime Binding v0.1 is the narrow bridge from `approved` to `deployed`. It consumes
+an approved `agent_spec` approval artifact, the exact approved `AgentSpecContent`,
+matching runtime metadata, and a control-plane-asserted binding context. It produces
+an immutable `RuntimeBindingArtifact` plus mutable runtime metadata transitioned to
+`deployed`.
+
+It enforces:
+
+- metadata must already be `approved`; the binding executor never creates approval
+- spec and metadata must match by `spec_id` and `version`
+- approval artifact must be `type: agent_spec`, `decision: approved`, and carry
+  `decided_by`/`decided_at`
+- approval subject must match spec `spec_id`, `version`, and `content_hash`
+- metadata must not already have a deployment binding
+- binding context must supply `binding_id`, `runtime_instance_id`, `deployed_at`,
+  `ttl`, and an explicit `actor` for state history
+
+Runtime Binding v0.1 does not start infrastructure, write a registry, execute tools,
+touch memory, create credentials, perform health checks, or attest runtime identity.
+It records a content-bound runtime binding only. Existing deployment bindings block
+fail-closed; idempotent redeploy/rebind belongs to a later drift/revocation-aware
+slice.
+
 ## 8. Agent-to-Agent Call Graph
 
 Default-deny directed graph, not a free mesh:
