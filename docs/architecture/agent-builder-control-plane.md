@@ -276,21 +276,26 @@ Two runtime invariants that per-edge fields alone cannot guarantee:
 ### Runtime Harness v0.1 Boundary
 
 Runtime Harness v0.1 is a Data Plane authorization slice, not an execution runtime.
-It consumes an already-approved spec version, matching runtime metadata, approved
-call-graph edge approval artifacts, a call context, and a planned runtime action. It
-returns `allowed` or `blocked` and, for allowed agent-to-agent calls, the derived next
-call context.
+It consumes an already-approved spec version, a signed full runtime-binding artifact,
+required signed lifecycle evidence for the acting spec, optional signed lifecycle
+evidence for an agent-call target, approved call-graph edge approval artifacts, a call
+context, and a planned runtime action. Its trusted context supplies the authorization
+instant and Ed25519 public-key set. It returns `allowed` or `blocked` and, for allowed
+agent-to-agent calls, the derived next call context.
 
-The v0.1 executable lifecycle state is deliberately limited to `deployed`. Runtime
-authorization requires deployment metadata carrying the exact `content_hash` approved
-and bound by the Runtime Binding boundary.
+Mutable `AgentSpecRuntimeMetadata` is deliberately not a runtime authorization input.
+The signed `RuntimeBindingArtifact` supplies immutable deployment identity, content
+binding, and lease fields; signed acting lifecycle evidence supplies mutable execution
+eligibility. This structurally prevents caller-shaped runtime metadata from acting as
+an authority source.
 
 Runtime Harness v0.1 enforces:
 
 - full runtime authorization input validation at the boundary
-- executable metadata state `deployed`, never bare `approved`
-- content-hash consistency between immutable spec content and deployment binding
-- temporal validity of the acting deployment binding against a required trusted
+- Ed25519 origin and integrity verification for the complete runtime binding artifact
+- recomputation of immutable spec content and three-way content-hash consistency
+- executable signed acting lifecycle state `deployed`, never bare `approved`
+- temporal validity of the signed acting runtime binding against a required trusted
   authorization instant, with no default or system-clock fallback
 - tool calls by exact declared `tool_id` and exact scope string only; there is no scope
   containment inference until a structured scope model exists
@@ -303,27 +308,27 @@ Runtime Harness v0.1 enforces:
 - human-gated edges fail-closed
 - call-context validity, including the acting spec as the tail of `call_chain`
 - cycle rejection using the full call chain
-- exact-subject lifecycle evidence for agent-call targets, with only `deployed`
-  currently callable
+- exact-subject signed lifecycle evidence for agent-call targets, with only `deployed`
+  currently callable and at most 300 seconds of freshness
 - depth, call-budget, token-budget, and time-budget spend-down without runtime budget
   increases
 
 ### Runtime Binding Validity / Lease Expiry v0.1
 
 Runtime Binding Validity v0.1 proves the temporal consistency of the acting spec's
-supplied deployment-binding evidence before any tool or agent action is authorized.
+signed full `RuntimeBindingArtifact` before any tool or agent action is authorized.
 The Data Plane receives a mandatory `TrustedRuntimeAuthorizationContext` containing
-only `authorization_time`; the harness never falls back to `Date.now()` or another
-implicit clock.
+`authorization_time` and a non-empty trusted public-key set; the harness never falls
+back to `Date.now()`, another implicit clock, or a caller-supplied verification key.
 
-`deployment_binding.ttl` is the only authoritative TTL for this decision. The optional
-top-level runtime-metadata `ttl` is ignored: it is neither a fallback nor combined with
-the binding TTL. Both `deployed_at` and `authorization_time` must be RFC 3339 instants
-with `Z` or an explicit numeric offset and at most millisecond precision. Comparisons
-use parsed absolute instants, never timestamp-string ordering.
+The signed artifact `ttl` is the only authoritative binding lease for this decision;
+runtime metadata is not present in the authorization input. Both `deployed_at` and
+`authorization_time` must be RFC 3339 instants with `Z` or an explicit numeric offset
+and at most millisecond precision. Comparisons use parsed absolute instants, never
+timestamp-string ordering.
 
 ```text
-expires_at_ms = deployed_at_instant_ms + deployment_binding.ttl * 1000
+expires_at_ms = deployed_at_instant_ms + runtime_binding_artifact.ttl * 1000
 
 valid when:
   deployed_at_instant_ms <= authorization_time_instant_ms < expires_at_ms
@@ -338,18 +343,25 @@ Guard priority is deterministic:
 
 ```text
 authorization input schema
-  -> trusted authorization context schema
-  -> executable state
-  -> spec/metadata subject match
-  -> deployment binding present
-  -> deployment binding content hash
+  -> trusted authorization context and keyset schema
+  -> runtime binding evidence present
+  -> binding attestation key known
+  -> binding signature valid
+  -> artifact/spec subject match
+  -> recomputed spec-content hash match
   -> temporal binding validity
+  -> acting lifecycle attestation key known
+  -> acting lifecycle signature valid
+  -> acting lifecycle subject match
+  -> acting state executable
+  -> acting lifecycle freshness
   -> call context
   -> planned action
 ```
 
-Consequently, an invalid trusted context wins over a non-executable state, a content-
-hash mismatch wins over expiry, and expiry wins over call-context or action failures.
+Consequently, a binding signature failure wins over artifact subject, hash, or lease
+failures; a content-hash mismatch wins over expiry; expiry wins over acting lifecycle;
+and a non-executable signed acting state wins over acting-evidence freshness.
 
 ### Runtime Callee Lifecycle Validity v0.1
 
@@ -357,19 +369,25 @@ Agent calls carry an optional top-level evidence object at the runtime authoriza
 boundary:
 
 ```text
-CalleeLifecycleEvidence
-  callee_spec_id
-  callee_version_or_channel
-  state
+AttestedAgentLifecycleEvidence
+  payload
+    spec_id
+    version_or_channel
+    state
+    asserted_at
+    freshness_ttl
+  attestation
+    key_id
+    signature_base64
 ```
 
 The field is structurally optional because tool calls do not need it, but it is
-semantically mandatory for every `agent_call`. It is caller-supplied,
-control-plane-asserted evidence, not a projection of canonical runtime metadata and
-not a second canonical lifecycle record. A present evidence object is always schema-
-validated. Tool calls ignore structurally valid evidence, including its subject and
-state; structurally invalid evidence still makes the complete authorization input
-invalid.
+semantically mandatory for every `agent_call`. Its payload is signed Control Plane
+evidence, not a projection of canonical runtime metadata and not a second canonical
+lifecycle record. A present evidence object is always schema-validated. Tool calls
+ignore structurally valid evidence, including an unknown key, invalid signature,
+foreign subject, non-callable state, or invalid freshness; structurally malformed
+evidence still makes the complete authorization input invalid.
 
 The lifecycle subject must match the planned action exactly on both
 `callee_spec_id` and the opaque `callee_version_or_channel` string. No channel
@@ -395,52 +413,145 @@ declared call
   -> intent intersection
   -> cycle detection
   -> callee lifecycle evidence present
+  -> callee attestation key known
+  -> callee signature valid
   -> callee lifecycle subject match
   -> callee state callable
+  -> callee lifecycle freshness
   -> depth
   -> call budget
   -> child-budget monotonicity
 ```
 
-The semantic failures are `callee_lifecycle_evidence_missing`,
-`callee_lifecycle_subject_mismatch`, and `callee_state_not_callable`. This ordering
-means a cycle wins over a revoked presented callee state, while a non-callable callee
-state wins over exhausted depth or budget. The global ordering remains authoritative:
-an expired caller binding blocks before any callee lifecycle evaluation.
+The semantic failures include `callee_lifecycle_evidence_missing`, generic attestation
+failures, `lifecycle_evidence_subject_mismatch` with role `callee`,
+`callee_state_not_callable`, and `lifecycle_evidence_not_fresh` with role `callee`.
+This ordering means a cycle wins over a forged callee attestation, while a non-callable
+signed state wins over freshness, exhausted depth, or budget. The global ordering
+remains authoritative: an expired caller binding blocks before any callee lifecycle
+evaluation.
 
-This slice validates only the consistency of presented evidence. Against an
-adversarial caller able to shape that evidence, Step 9 does not prove a trustworthy
-current callee state. It performs no callee binding content-hash or lease validation,
-channel resolution, registry/store lookup, heartbeat check, process-liveness check,
-execution, metadata mutation, or lifecycle transition.
+The current harness authenticates the presented lifecycle assertion and bounds its
+age, but still performs no callee binding content-hash or lease validation, channel
+resolution, registry/store lookup, heartbeat check, process-liveness check, execution,
+metadata mutation, or lifecycle transition.
 
-An immutable `RuntimeBindingArtifact` can attest only deployment evidence at a point
-in time; by itself it cannot attest a mutable lifecycle state that may later become
-`suspended` or `revoked`. A future attested lifecycle-evidence slice therefore needs
-its own assertion time and recency bound, evaluated against the same injected
-`authorization_time`. That freshness bound is a separate lease from the Step 8
-binding lease. It narrows but cannot eliminate the interval in which revocation may
-occur after evidence was issued. A trusted store read at authorization time is the
-stronger alternative, and its result can be injected so the core authorization
-function remains pure. Neither approach alone proves process liveness.
+An immutable `RuntimeBindingArtifact` attests deployment evidence at a point in time;
+it cannot by itself attest mutable lifecycle state. Acting and callee lifecycle
+evidence therefore carry their own assertion time and recency bound, evaluated against
+the same injected `authorization_time`. This freshness lease is separate from the
+Step 8 binding lease. It narrows but cannot eliminate the interval in which revocation
+may occur after evidence was issued. A trusted store read at authorization time is the
+stronger alternative. Neither approach alone proves process liveness.
+
+### Runtime Evidence Attestation / Lifecycle Freshness v0.1
+
+Step 10 authenticates presented runtime authority without giving the Data Plane a
+private key or adding I/O to the authorization function. Production code implements
+verification only. An external Control Plane signer is responsible for producing
+attestation envelopes; signing, issuance, and private-key custody are outside this
+package.
+
+```text
+AttestedRuntimeBindingEvidence
+  payload: RuntimeBindingArtifact   # all eight required fields
+  attestation: AttestationEnvelope
+
+AttestedAgentLifecycleEvidence
+  payload: AgentLifecycleEvidencePayload
+  attestation: AttestationEnvelope
+
+AttestationEnvelope
+  key_id
+  signature_base64                  # canonical base64, exactly 64 decoded bytes
+
+TrustedRuntimeAuthorizationContext
+  authorization_time
+  attestation_keys[]                # unique key_id + canonical Ed25519 SPKI DER
+```
+
+The trusted keyset is non-empty and may contain multiple keys during rotation. Every
+key must be canonical DER/SPKI that parses specifically as Ed25519 and re-exports to
+the identical bytes. Empty, duplicate-ID, malformed, non-canonical, or non-Ed25519
+keysets invalidate the trusted context. The caller never supplies a verification key.
+
+The Ed25519 preimage is byte-defined:
+
+```text
+UTF8(DOMAIN_TAG + "\n" + JSON.stringify(canonicalize(validated_payload)))
+```
+
+Only the strict schema-validated payload is signed. The envelope, key ID, and
+signature are not part of the signed bytes. Payload fields are all required and use
+only strings and integers; no optional or floating-point signed field is permitted.
+The three versioned domain tags prevent type and role replay:
+
+```text
+agent-builder/attest/runtime-binding/v1
+agent-builder/attest/lifecycle/acting/v1
+agent-builder/attest/lifecycle/callee/v1
+```
+
+The runtime binding payload is the complete `RuntimeBindingArtifact`, including
+`spec_id`, `version`, `content_hash`, deployment lease, runtime identity, and approval
+artifact ID. The harness removes the presented spec's `content_hash`, recomputes it
+using the existing canonical content-hash algorithm, and requires:
+
+```text
+recomputed_content_hash == spec.content_hash
+recomputed_content_hash == runtime_binding_artifact.content_hash
+```
+
+Either failure maps to `runtime_binding_content_hash_mismatch`. Mutable runtime
+metadata is not accepted in `RuntimeAuthorizationInput`; therefore no unsigned state,
+subject, or deployment-binding projection can compete with the attested sources.
+
+Lifecycle evidence is required for the acting spec on every action and semantically
+required for the callee on agent calls. Its signed payload contains `spec_id`, the
+exact concrete version or opaque channel key, `state`, `asserted_at`, and
+`freshness_ttl`. The TTL is a positive whole second with a hard schema ceiling of 300
+seconds. Freshness uses a half-open interval over absolute instants:
+
+```text
+fresh_until_ms = asserted_at_instant_ms + freshness_ttl * 1000
+
+fresh when:
+  asserted_at_instant_ms <= authorization_time_instant_ms < fresh_until_ms
+```
+
+There is deliberately no clock-skew grace in v0.1. Authorization before `asserted_at`
+blocks as `lifecycle_evidence_not_fresh` with condition `from_future`; authorization
+at or after `fresh_until` uses condition `expired`.
+
+The closed reason catalog adds four codes:
+
+- `attestation_key_unknown`, parameterized by evidence kind and key ID
+- `attestation_invalid`, parameterized by evidence kind and key ID
+- `lifecycle_evidence_subject_mismatch`, parameterized by acting/callee role
+- `lifecycle_evidence_not_fresh`, parameterized by role and freshness condition
+
+`runtime_subject_mismatch` now means signed runtime-binding artifact vs. presented
+spec. `runtime_state_not_executable` reads signed acting lifecycle state.
+`runtime_binding_content_hash_mismatch` represents either failed hash equality above.
+The earlier `callee_lifecycle_subject_mismatch` code is retired in favor of the generic
+role-bearing lifecycle reason.
 
 Known v0.1 boundaries:
 
-- Presented callee lifecycle eligibility is checked, but evidence authenticity,
-  integrity, freshness, canonical current state, and channel resolution are not.
+- Signed lifecycle freshness bounds evidence age but does not prove synchronous
+  current state after `asserted_at`; there is no lifecycle store lookup.
+- Call-graph approval artifacts remain caller-supplied and unsigned. Approval
+  provenance attestation is implementation Step 11, not part of Step 10.
 - Parent context spend-down is caller-owned in v0.1. The harness returns the authorized
   child context for an agent call; it does not mutate or return the parent context for
   later sibling calls.
-- `current_run_id` is structurally validated but not attested against a runtime store.
-  Run identity attestation belongs to a later runtime binding slice.
+- Call context, `current_run_id`, cycle chain, depth, and remaining budget are
+  caller-supplied and unattested. Run identity and spend-down attestation is
+  implementation Step 12.
 - Process liveness is not proven. That requires heartbeat evidence, a runtime store,
   and a runtime lookup, none of which this slice performs.
-- Runtime authorization treats the supplied deployment binding as control-plane-
-  asserted evidence. It validates its structure, subject binding, content hash, and
-  temporal consistency, but does not authenticate its provenance or integrity. A
-  future attestation must cover the complete runtime binding artifact. Until then,
-  this slice proves temporal consistency of presented evidence, not that the Control
-  Plane minted it or that it remained unmodified.
+- Key issuance, private-key custody, KMS/HSM, CRL or other key-revocation distribution,
+  nonce replay storage, channel resolution, and real execution remain out of scope.
 
 ## 11. Drift Detection and Revocation Loop
 

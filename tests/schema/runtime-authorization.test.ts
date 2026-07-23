@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ApprovalArtifactSchema } from "../../src/schema/approval-artifact.js";
 import {
-  CalleeLifecycleEvidenceSchema,
+  AgentLifecycleEvidencePayloadSchema,
+  RUNTIME_BINDING_ATTESTATION_DOMAIN,
+} from "../../src/schema/runtime-attestation.js";
+import {
   RUNTIME_AUTHORIZATION_BLOCK_REASONS,
   RuntimeActionSchema,
   RuntimeAuthorizationBlockReasonCodeSchema,
@@ -9,18 +12,38 @@ import {
   RuntimeBudgetSchema,
   TrustedRuntimeAuthorizationContextSchema,
 } from "../../src/schema/runtime-authorization.js";
+import { RuntimeBindingArtifactSchema } from "../../src/schema/runtime-binding.js";
 import { validAgentSpecContent } from "../fixtures/specs.js";
+import {
+  TEST_TRUSTED_ATTESTATION_KEY,
+  attestLifecycle,
+  signPayload,
+} from "../support/runtime-attestation.js";
 
-const executableMetadata = {
+const bindingPayload = RuntimeBindingArtifactSchema.parse({
+  bindingId: "binding-001",
   specId: "spec-crm-enricher",
   version: "1.0.0",
-  state: "approved",
-  stateHistory: [
-    { state: "draft", actor: "builder-agent", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
-    { state: "approved", actor: "release-manager", timestamp: "2026-07-23T12:00:00Z", reason: "approved" },
-  ],
-  requestor: "builder-agent",
+  contentHash: "hash-v1",
+  approvalArtifactId: "approval-spec-001",
+  runtimeInstanceId: "runtime-001",
+  deployedAt: "2026-07-23T12:30:00Z",
+  ttl: 3600,
+});
+
+const actingPayload = AgentLifecycleEvidencePayloadSchema.parse({
+  specId: "spec-crm-enricher",
+  versionOrChannel: "1.0.0",
+  state: "deployed",
+  assertedAt: "2026-07-23T12:59:00Z",
+  freshnessTtl: 300,
+});
+
+const bindingEvidence = {
+  payload: bindingPayload,
+  attestation: signPayload(RUNTIME_BINDING_ATTESTATION_DOMAIN, bindingPayload),
 };
+const actingLifecycleEvidence = attestLifecycle(actingPayload, "acting");
 
 const callContext = {
   rootRunId: "run-root",
@@ -54,17 +77,34 @@ const edgeApproval = ApprovalArtifactSchema.parse({
   },
 });
 
+const candidate = {
+  spec: validAgentSpecContent,
+  runtimeBindingEvidence: bindingEvidence,
+  actingLifecycleEvidence,
+  action: { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" },
+  callContext,
+  currentRunId: "run-root",
+  edgeApprovals: [edgeApproval],
+};
+
 describe("Runtime authorization schemas", () => {
   it("accepts runtime budgets in runtime spend-down dimensions", () => {
-    expect(RuntimeBudgetSchema.safeParse({ callBudget: 1, tokenBudget: 1_000, timeBudget: 5_000 }).success).toBe(true);
-  });
-
-  it("rejects spec-budget-shaped runtime budgets", () => {
-    expect(RuntimeBudgetSchema.safeParse({ costCeiling: 1, maxIterations: 1, timeoutMs: 5_000 }).success).toBe(false);
+    expect(
+      RuntimeBudgetSchema.safeParse({ callBudget: 1, tokenBudget: 1_000, timeBudget: 5_000 }).success,
+    ).toBe(true);
+    expect(
+      RuntimeBudgetSchema.safeParse({ costCeiling: 1, maxIterations: 1, timeoutMs: 5_000 }).success,
+    ).toBe(false);
   });
 
   it("accepts tool and agent runtime actions", () => {
-    expect(RuntimeActionSchema.safeParse({ type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" }).success).toBe(true);
+    expect(
+      RuntimeActionSchema.safeParse({
+        type: "tool_call",
+        toolId: "crm.enrich",
+        scope: "tenant:acme:crm",
+      }).success,
+    ).toBe(true);
     expect(
       RuntimeActionSchema.safeParse({
         type: "agent_call",
@@ -76,35 +116,12 @@ describe("Runtime authorization schemas", () => {
     ).toBe(true);
   });
 
-  it("accepts only strict, subject-keyed callee lifecycle evidence", () => {
-    const validEvidence = {
-      calleeSpecId: "spec-web-search",
-      calleeVersionOrChannel: "1.0.0",
-      state: "deployed",
-    };
-    expect(CalleeLifecycleEvidenceSchema.safeParse(validEvidence).success).toBe(true);
-
-    for (const invalidEvidence of [
-      { ...validEvidence, calleeSpecId: "" },
-      { ...validEvidence, calleeVersionOrChannel: "" },
-      { ...validEvidence, state: "unknown" },
-      { ...validEvidence, source: "unmodeled" },
-      { calleeSpecId: "spec-web-search", state: "deployed" },
-    ]) {
-      expect(CalleeLifecycleEvidenceSchema.safeParse(invalidEvidence).success).toBe(false);
-    }
-  });
-
-  it("accepts edge approval artifacts as runtime inputs, not raw edge arrays", () => {
-    const candidate = {
-      spec: validAgentSpecContent,
-      metadata: executableMetadata,
-      action: { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" },
-      callContext,
-      currentRunId: "run-root",
-      edgeApprovals: [edgeApproval],
-    };
+  it("requires acting evidence while keeping binding and callee evidence structurally optional", () => {
     expect(RuntimeAuthorizationInputSchema.safeParse(candidate).success).toBe(true);
+    const { runtimeBindingEvidence: _binding, ...withoutBinding } = candidate;
+    expect(RuntimeAuthorizationInputSchema.safeParse(withoutBinding).success).toBe(true);
+    const { actingLifecycleEvidence: _acting, ...withoutActing } = candidate;
+    expect(RuntimeAuthorizationInputSchema.safeParse(withoutActing).success).toBe(false);
 
     const agentCandidate = {
       ...candidate,
@@ -117,56 +134,57 @@ describe("Runtime authorization schemas", () => {
       },
     };
     expect(RuntimeAuthorizationInputSchema.safeParse(agentCandidate).success).toBe(true);
+  });
 
-    const candidateWithEvidence = {
-      ...candidate,
-      calleeLifecycleEvidence: {
-        calleeSpecId: "spec-web-search",
-        calleeVersionOrChannel: "1.0.0",
-        state: "deployed",
-      },
-    };
-    expect(RuntimeAuthorizationInputSchema.safeParse(candidateWithEvidence).success).toBe(true);
+  it("rejects legacy metadata, raw edges, and malformed presented callee evidence", () => {
+    expect(
+      RuntimeAuthorizationInputSchema.safeParse({ ...candidate, metadata: { state: "deployed" } }).success,
+    ).toBe(false);
     expect(
       RuntimeAuthorizationInputSchema.safeParse({
-        ...candidateWithEvidence,
+        ...candidate,
+        edgeApprovals: [edgeApproval.type === "call_graph_edge" ? edgeApproval.edge : {}],
+      }).success,
+    ).toBe(false);
+    expect(
+      RuntimeAuthorizationInputSchema.safeParse({
+        ...candidate,
         calleeLifecycleEvidence: {
-          ...candidateWithEvidence.calleeLifecycleEvidence,
-          state: "unknown",
+          payload: { ...actingPayload, freshnessTtl: 301 },
+          attestation: actingLifecycleEvidence.attestation,
         },
       }).success,
     ).toBe(false);
-
-    const rawEdgeCandidate = {
-      ...candidate,
-      edgeApprovals: [edgeApproval.type === "call_graph_edge" ? edgeApproval.edge : {}],
-    };
-    expect(RuntimeAuthorizationInputSchema.safeParse(rawEdgeCandidate).success).toBe(false);
   });
 
-  it("accepts unambiguous trusted authorization instants and rejects bare local time", () => {
+  it("accepts trusted time plus a valid keyset and rejects ambiguous contexts", () => {
     expect(
       TrustedRuntimeAuthorizationContextSchema.safeParse({
         authorizationTime: "2026-07-23T12:00:00Z",
-      }).success,
-    ).toBe(true);
-    expect(
-      TrustedRuntimeAuthorizationContextSchema.safeParse({
-        authorizationTime: "2026-07-23T14:00:00+02:00",
+        attestationKeys: [TEST_TRUSTED_ATTESTATION_KEY],
       }).success,
     ).toBe(true);
     expect(
       TrustedRuntimeAuthorizationContextSchema.safeParse({
         authorizationTime: "2026-07-23T12:00:00",
+        attestationKeys: [TEST_TRUSTED_ATTESTATION_KEY],
+      }).success,
+    ).toBe(false);
+    expect(
+      TrustedRuntimeAuthorizationContextSchema.safeParse({
+        authorizationTime: "2026-07-23T12:00:00Z",
+        attestationKeys: [],
       }).success,
     ).toBe(false);
   });
 
-  it("keeps runtime authorization block reasons in the closed schema catalog", () => {
+  it("keeps the structured block-reason union in the closed catalog", () => {
     for (const reason of RUNTIME_AUTHORIZATION_BLOCK_REASONS) {
       expect(RuntimeAuthorizationBlockReasonCodeSchema.safeParse(reason).success).toBe(true);
     }
-    expect(RuntimeAuthorizationBlockReasonCodeSchema.safeParse("callee_state_not_executable").success).toBe(false);
+    expect(
+      RuntimeAuthorizationBlockReasonCodeSchema.safeParse("callee_lifecycle_subject_mismatch").success,
+    ).toBe(false);
+    expect(RuntimeAuthorizationBlockReasonCodeSchema.safeParse("attestation_missing").success).toBe(false);
   });
 });
-

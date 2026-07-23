@@ -32,12 +32,14 @@ package's current scope.
 The implemented Data Plane authorization slice is:
 
 ```text
-approved AgentSpecContent + matching RuntimeMetadata
+approved AgentSpecContent
+  + AttestedRuntimeBindingEvidence
+  + required AttestedAgentLifecycleEvidence for the acting spec
   + CallGraphEdgeApproval artifacts
   + CallContext
   + planned RuntimeAction
-  + TrustedRuntimeAuthorizationContext
-  + CalleeLifecycleEvidence for agent calls
+  + TrustedRuntimeAuthorizationContext (authorization time + public keyset)
+  + AttestedAgentLifecycleEvidence for agent-call targets
   -> Runtime Harness
   -> allowed or blocked authorization result
 ```
@@ -83,23 +85,30 @@ already-approved, versioned bindings.
   - blocks existing deployment bindings instead of overwriting them
   - never starts real infrastructure or writes runtime state
 - A runtime authorization harness that:
-  - accepts only the v0.1 executable lifecycle state `deployed`
   - validates the full runtime authorization input at the boundary
-  - requires an explicit trusted authorization instant with no system-clock fallback
-  - verifies the acting spec and runtime metadata match by spec ID, version, and binding content hash
-  - evaluates the acting deployment binding over the half-open lease interval
+  - requires an explicit trusted authorization instant and Ed25519 public-key set
+    with no system-clock or caller-key fallback
+  - verifies a domain-separated Ed25519 signature over the complete
+    `RuntimeBindingArtifact`
+  - recomputes the presented immutable spec content hash and requires it to match
+    both the spec and the signed artifact
+  - evaluates the signed runtime binding over the half-open lease interval
     `deployedAt <= authorizationTime < deployedAt + ttl`
-  - treats only `deploymentBinding.ttl` as authoritative for binding validity
+  - removes mutable runtime metadata from the authorization input and takes acting
+    lifecycle state only from required signed evidence
+  - verifies acting and callee lifecycle evidence with role-specific signature domains
+    and a maximum 300-second half-open freshness lease
+  - accepts only acting state `deployed` as executable and callee state `deployed` as
+    callable while keeping those policy concepts separate
+  - rejects future-dated lifecycle assertions without clock-skew grace
   - validates that the acting spec is the tail of the call chain
   - authorizes tool calls only by exact declared tool/scope matches
   - authorizes agent calls only through approved call-graph edge artifacts
   - requires intents to be allowed by both the spec declaration and approved edge
-  - requires exact-subject callee lifecycle evidence for agent calls and treats only
-    `deployed` as callable
-  - treats callee callability as distinct from caller executability and matches the
-    opaque `calleeVersionOrChannel` key without resolving channels
-  - ignores valid callee lifecycle evidence for tool calls while still rejecting any
-    structurally invalid evidence at the input boundary
+  - matches the opaque `versionOrChannel` lifecycle subject exactly without resolving
+    channels
+  - ignores structurally valid callee lifecycle evidence for tool calls while still
+    rejecting malformed evidence at the input boundary
   - blocks ambiguous matching edge approvals fail-closed
   - blocks human-gated edges fail-closed
   - derives the next call context only for allowed agent calls
@@ -189,9 +198,14 @@ This package intentionally keeps several capabilities out of scope:
 - no implicit runtime clock or `Date.now()` fallback during authorization
 - no metadata mutation or lifecycle transition when a runtime binding expires
 - no process-liveness claim without a heartbeat, runtime store, and runtime lookup
-- no claim that supplied runtime-binding evidence is authentic or untampered
-- no claim that supplied callee lifecycle evidence is authentic, fresh, or current
-- no callee channel resolution, binding TTL check, or content-hash check in Step 9
+- no private-key custody, signing, issuance, KMS/HSM, CRL, or key-registry lookup
+- no nonce/replay store or synchronous lifecycle-state lookup; signed freshness narrows
+  but cannot eliminate the post-assertion revocation window
+- no clock-skew grace for future-dated lifecycle evidence in v0.1
+- no channel resolution or process-liveness claim from lifecycle evidence
+- no attestation of caller-supplied call-graph approval artifacts until implementation Step 11
+- no attestation of call context, run identity, cycle chain, or spend-down state until
+  implementation Step 12
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
 - no runtime authorization from ambiguous matching call-graph edge approvals

@@ -43,8 +43,9 @@ export const _runtimeBindingInputTypeBinding =
   RuntimeBindingInputSchema satisfies z.ZodType<RuntimeBindingInput>;
 
 /**
- * Control-plane asserted runtime binding context. This is not a production
- * attestation layer; real runtime identity attestation belongs to a later slice.
+ * Control-plane asserted runtime binding context. This boundary still emits an
+ * unsigned RuntimeBindingArtifact; an external Control Plane signer creates the
+ * attestation envelope verified by the Runtime Authorization Harness.
  */
 export const TrustedRuntimeBindingContextSchema = z
   .object({
