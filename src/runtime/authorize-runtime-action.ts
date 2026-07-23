@@ -11,12 +11,7 @@ import type {
   AttestedAgentLifecycleEvidence,
   AttestedCallGraphEdgeApproval,
   LifecycleEvidenceRole,
-} from "../schema/runtime-attestation.js";
-import {
-  ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
-  CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
-  CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
-  RUNTIME_BINDING_ATTESTATION_DOMAIN,
+  RunContextEvidencePayload,
 } from "../schema/runtime-attestation.js";
 import type {
   AgentCallRuntimeAction,
@@ -34,7 +29,7 @@ import {
   remainingRuntimeBudgetFromContext,
 } from "./runtime-budget.js";
 import {
-  type RuntimeAttestationDomain,
+  RUNTIME_ATTESTATION_DOMAIN_BY_EVIDENCE_KIND,
   verifyEd25519Attestation,
 } from "./runtime-attestation.js";
 
@@ -56,7 +51,6 @@ function isCallableState(state: string): boolean {
 
 function validateAttestation(
   evidenceKind: AttestationEvidenceKind,
-  domain: RuntimeAttestationDomain,
   payload: unknown,
   envelope: AttestationEnvelope,
   context: TrustedRuntimeAuthorizationContext,
@@ -77,7 +71,14 @@ function validateAttestation(
     };
   }
 
-  if (!verifyEd25519Attestation(domain, payload, envelope, trustedKey)) {
+  if (
+    !verifyEd25519Attestation(
+      RUNTIME_ATTESTATION_DOMAIN_BY_EVIDENCE_KIND[evidenceKind],
+      payload,
+      envelope,
+      trustedKey,
+    )
+  ) {
     return {
       outcome: "blocked",
       reason: {
@@ -179,7 +180,6 @@ function validateRuntimeEvidence(
   const bindingEvidence = input.runtimeBindingEvidence;
   const bindingAttestationBlock = validateAttestation(
     "runtime_binding",
-    RUNTIME_BINDING_ATTESTATION_DOMAIN,
     bindingEvidence.payload,
     bindingEvidence.attestation,
     context,
@@ -228,7 +228,6 @@ function validateRuntimeEvidence(
   const actingEvidence = input.actingLifecycleEvidence;
   const actingAttestationBlock = validateAttestation(
     "acting_lifecycle",
-    ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
     actingEvidence.payload,
     actingEvidence.attestation,
     context,
@@ -265,16 +264,91 @@ function validateRuntimeEvidence(
   return validateLifecycleFreshness(actingEvidence.payload, "acting", context);
 }
 
-function validateCallContext(input: RuntimeAuthorizationInput): CallContext | RuntimeAuthorizationResult {
-  const tail = input.callContext.callChain.at(-1);
-  if (tail !== input.spec.specId) {
+function validateRunContextFreshness(
+  payload: RunContextEvidencePayload,
+  context: TrustedRuntimeAuthorizationContext,
+): RuntimeAuthorizationResult | undefined {
+  const assertedAtEpochMs = Date.parse(payload.assertedAt);
+  const authorizationTimeEpochMs = Date.parse(context.authorizationTime);
+
+  if (authorizationTimeEpochMs < assertedAtEpochMs) {
     return {
       outcome: "blocked",
-      reason: { type: "call_context_invalid", reason: "acting_spec_not_call_chain_tail" },
+      reason: { type: "run_context_not_fresh", condition: "from_future" },
     };
   }
 
-  return input.callContext;
+  const expiresAtEpochMs = assertedAtEpochMs + payload.freshnessTtl * 1_000;
+  if (authorizationTimeEpochMs >= expiresAtEpochMs) {
+    return {
+      outcome: "blocked",
+      reason: { type: "run_context_not_fresh", condition: "expired" },
+    };
+  }
+
+  return undefined;
+}
+
+function validateRunContextEvidence(
+  input: RuntimeAuthorizationInput,
+  context: TrustedRuntimeAuthorizationContext,
+): RunContextEvidencePayload | RuntimeAuthorizationResult {
+  const evidence = input.runContextEvidence;
+  const attestationBlock = validateAttestation(
+    "run_context",
+    evidence.payload,
+    evidence.attestation,
+    context,
+  );
+  if (attestationBlock) {
+    return attestationBlock;
+  }
+
+  const recomputedContentHash = recomputeSpecContentHash(input.spec);
+  if (
+    evidence.payload.specId !== input.spec.specId ||
+    evidence.payload.version !== input.spec.version ||
+    evidence.payload.contentHash !== input.spec.contentHash ||
+    evidence.payload.contentHash !== recomputedContentHash
+  ) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "run_context_subject_mismatch",
+        specId: input.spec.specId,
+        version: input.spec.version,
+      },
+    };
+  }
+
+  const freshnessBlock = validateRunContextFreshness(evidence.payload, context);
+  if (freshnessBlock) {
+    return freshnessBlock;
+  }
+
+  const { callContext, currentRunId } = evidence.payload;
+  if (callContext.callChain.at(-1) !== evidence.payload.specId) {
+    return {
+      outcome: "blocked",
+      reason: { type: "run_context_invalid", condition: "call_chain_tail_mismatch" },
+    };
+  }
+
+  if ((callContext.parentRunId === null) !== (currentRunId === callContext.rootRunId)) {
+    return {
+      outcome: "blocked",
+      reason: { type: "run_context_invalid", condition: "root_parent_relation_invalid" },
+    };
+  }
+
+  if (callContext.parentRunId !== null && callContext.parentRunId === currentRunId) {
+    return {
+      outcome: "blocked",
+      reason: { type: "run_context_invalid", condition: "parent_equals_current" },
+    };
+  }
+
+  return evidence.payload;
 }
 
 function authorizeToolCall(
@@ -353,7 +427,6 @@ function validateCalleeLifecycleEvidence(
 
   const attestationBlock = validateAttestation(
     "callee_lifecycle",
-    CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
     evidence.payload,
     evidence.attestation,
     context,
@@ -396,6 +469,7 @@ function authorizeAgentCall(
   input: RuntimeAuthorizationInput,
   action: AgentCallRuntimeAction,
   callContext: CallContext,
+  currentRunId: string,
   context: TrustedRuntimeAuthorizationContext,
 ): RuntimeAuthorizationResult {
   const declaredCall = input.spec.declaredAgentCalls.find(
@@ -418,7 +492,6 @@ function authorizeAgentCall(
   for (const approvalEvidence of relevantApprovalEvidence) {
     const attestationBlock = validateAttestation(
       "call_graph_edge_approval",
-      CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
       approvalEvidence.payload,
       approvalEvidence.attestation,
       context,
@@ -510,13 +583,17 @@ function authorizeAgentCall(
   return {
     outcome: "allowed",
     actionType: "agent_call",
-    nextCallContext: deriveNextCallContext(
-      callContext,
-      action,
-      declaredCall.maxDepth,
-      edge.maxDepth,
-      input.currentRunId,
-    ),
+    childRunContextDraft: {
+      calleeSpecId: action.calleeSpecId,
+      calleeVersionOrChannel: action.calleeVersionOrChannel,
+      callContext: deriveNextCallContext(
+        callContext,
+        action,
+        declaredCall.maxDepth,
+        edge.maxDepth,
+        currentRunId,
+      ),
+    },
   };
 }
 
@@ -535,10 +612,15 @@ function authorizeAgentCall(
  * - Agent-call authority comes only from complete, decided, Ed25519-attested
  *   call-graph edge approval artifacts. Every selected artifact is verified
  *   before its decision or policy fields are used.
- * - Parent context spend-down is caller-owned in v0.1. This function returns
- *   the authorized child context; it does not mutate or return the parent
- *   context for later sibling calls. Call context, run identity, cycle chain,
- *   and remaining budgets are not attested until a later slice.
+ * - Run context, run identity, cycle chain, and remaining budgets are carried
+ *   only by signed, content-bound evidence with a maximum 300-second freshness
+ *   window. An allowed agent call returns an unsigned child-context draft for
+ *   an external trusted resolver and signer; this Harness never mints runtime
+ *   authority.
+ * - Context attestation proves origin and integrity of presented claims, not
+ *   parent spend consumption, single-use semantics, parent-child issuance, or
+ *   current run identity. Sibling and nonce replay require a later runtime
+ *   store or parent-decision linkage.
  * - Edge approval attestation proves presented origin and integrity, not that
  *   the artifact is the latest canonical decision, remains unrevoked, or is
  *   protected from replay. decidedAt is not an authority-freshness lease.
@@ -576,9 +658,9 @@ export function authorizeRuntimeAction(
     return runtimeEvidenceBlock;
   }
 
-  const callContext = validateCallContext(validatedInput);
-  if ("outcome" in callContext) {
-    return callContext;
+  const runContext = validateRunContextEvidence(validatedInput, validatedContext);
+  if ("outcome" in runContext) {
+    return runContext;
   }
 
   switch (validatedInput.action.type) {
@@ -588,7 +670,8 @@ export function authorizeRuntimeAction(
       return authorizeAgentCall(
         validatedInput,
         validatedInput.action,
-        callContext,
+        runContext.callContext,
+        runContext.currentRunId,
         validatedContext,
       );
   }

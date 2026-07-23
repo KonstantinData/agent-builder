@@ -20,4 +20,14 @@ describe("CallContextSchema", () => {
     const candidate = { ...validCallContext, remainingDepth: -1 };
     expect(CallContextSchema.safeParse(candidate).success).toBe(false);
   });
+
+  it("requires non-empty run identifiers and a non-empty spec call chain", () => {
+    for (const candidate of [
+      { ...validCallContext, rootRunId: "" },
+      { ...validCallContext, parentRunId: "" },
+      { ...validCallContext, callChain: [] },
+    ]) {
+      expect(CallContextSchema.safeParse(candidate).success).toBe(false);
+    }
+  });
 });

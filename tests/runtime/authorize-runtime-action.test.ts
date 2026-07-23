@@ -15,7 +15,9 @@ import {
   type AttestationEvidenceKind,
   type AttestedAgentLifecycleEvidence,
   type AttestedCallGraphEdgeApproval,
+  type AttestedRunContextEvidence,
   type AttestedRuntimeBindingEvidence,
+  RunContextEvidencePayloadSchema,
 } from "../../src/schema/runtime-attestation.js";
 import {
   type AgentCallRuntimeAction,
@@ -32,6 +34,7 @@ import {
   attestLifecycle,
   attestCallGraphEdgeApproval,
   attestRuntimeBinding,
+  attestRunContext,
 } from "../support/runtime-attestation.js";
 
 function specFixture(overrides: Record<string, unknown> = {}): AgentSpecContent {
@@ -122,7 +125,7 @@ function authorizeRuntimeAction(
 function callContext(overrides: Record<string, unknown> = {}): CallContext {
   return CallContextSchema.parse({
     rootRunId: "run-root",
-    parentRunId: null,
+    parentRunId: "run-parent",
     callChain: ["spec-crm-enricher"],
     remainingDepth: 2,
     remainingCallBudget: 3,
@@ -130,6 +133,23 @@ function callContext(overrides: Record<string, unknown> = {}): CallContext {
     remainingTimeBudget: 30_000,
     ...overrides,
   });
+}
+
+function runContextEvidence(
+  spec: AgentSpecContent = runtimeSpec,
+  overrides: Record<string, unknown> = {},
+): AttestedRunContextEvidence {
+  const payload = RunContextEvidencePayloadSchema.parse({
+    specId: spec.specId,
+    version: spec.version,
+    contentHash: spec.contentHash,
+    currentRunId: "run-current",
+    callContext: callContext({ callChain: [spec.specId] }),
+    assertedAt: "2026-07-23T12:59:00Z",
+    freshnessTtl: 300,
+    ...overrides,
+  });
+  return attestRunContext(payload);
 }
 
 function edgeApproval(
@@ -171,9 +191,8 @@ function baseInput(overrides: Partial<RuntimeAuthorizationInput> = {}): RuntimeA
       specId: spec.specId,
       versionOrChannel: spec.version,
     }),
+    runContextEvidence: runContextEvidence(spec),
     action: { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" },
-    callContext: callContext(),
-    currentRunId: "run-current",
     attestedEdgeApprovals: [edgeApproval()],
     ...overrides,
   };
@@ -195,7 +214,7 @@ function agentInput(overrides: Partial<RuntimeAuthorizationInput> = {}): Runtime
   });
 }
 
-function mutateSignature<T extends AttestedRuntimeBindingEvidence | AttestedAgentLifecycleEvidence | AttestedCallGraphEdgeApproval>(
+function mutateSignature<T extends AttestedRuntimeBindingEvidence | AttestedAgentLifecycleEvidence | AttestedCallGraphEdgeApproval | AttestedRunContextEvidence>(
   evidence: T,
 ): T {
   const signature = Buffer.from(evidence.attestation.signatureBase64, "base64");
@@ -218,7 +237,14 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
   });
 
   it("fails input validation before trusted-context validation", () => {
-    const input = { ...baseInput(), currentRunId: "" } as RuntimeAuthorizationInput;
+    const valid = baseInput();
+    const input = {
+      ...valid,
+      runContextEvidence: {
+        ...valid.runContextEvidence,
+        payload: { ...valid.runContextEvidence.payload, currentRunId: "" },
+      },
+    } as RuntimeAuthorizationInput;
     expect(
       authorizeRuntimeActionWithContext(input, {
         authorizationTime: "not-a-time",
@@ -520,6 +546,9 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T12:30:00Z",
           }),
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            assertedAt: "2026-07-23T12:30:00Z",
+          }),
         }),
         { authorizationTime: "2026-07-23T12:30:00Z" },
       ),
@@ -532,6 +561,9 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
       authorizeRuntimeAction(
         baseInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T13:29:00Z",
+          }),
+          runContextEvidence: runContextEvidence(runtimeSpec, {
             assertedAt: "2026-07-23T13:29:00Z",
           }),
         }),
@@ -636,26 +668,27 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
   it("treats acting freshness as a half-open interval with no skew grace", () => {
     const assertedAt = "2026-07-23T13:00:00Z";
     const evidence = lifecycleEvidence("acting", { assertedAt, freshnessTtl: 300 });
+    const freshRunContext = runContextEvidence(runtimeSpec, { assertedAt, freshnessTtl: 300 });
 
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence }), {
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
         authorizationTime: assertedAt,
       }),
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence }), {
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
         authorizationTime: "2026-07-23T12:59:59.999Z",
       }),
     ).toMatchObject({
       reason: { type: "lifecycle_evidence_not_fresh", role: "acting", condition: "from_future" },
     });
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence }), {
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
         authorizationTime: "2026-07-23T13:04:59.999Z",
       }),
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence }), {
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
         authorizationTime: "2026-07-23T13:05:00Z",
       }),
     ).toMatchObject({
@@ -700,13 +733,310 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
             assertedAt: "2026-07-23T12:00:00Z",
             freshnessTtl: 300,
           }),
-          callContext: callContext({ callChain: ["spec-other"] }),
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            callContext: callContext({ callChain: ["spec-other"] }),
+          }),
           action: { type: "tool_call", toolId: "email.send", scope: "tenant:acme:crm" },
         }),
       ),
     ).toMatchObject({
       reason: { type: "lifecycle_evidence_not_fresh", role: "acting", condition: "expired" },
     });
+  });
+});
+
+describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
+  it("accepts both valid root and child run topology", () => {
+    expect(authorizeRuntimeAction(baseInput())).toEqual({
+      outcome: "allowed",
+      actionType: "tool_call",
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            currentRunId: "run-root",
+            callContext: callContext({ parentRunId: null }),
+          }),
+        }),
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it("maps missing key purpose and invalid signatures to generic attestation reasons", () => {
+    expect(
+      authorizeRuntimeAction(baseInput(), contextWithoutEvidenceKind("run_context")),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "attestation_key_unknown",
+        evidenceKind: "run_context",
+        keyId: TEST_ATTESTATION_KEY_ID,
+      },
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: mutateSignature(runContextEvidence()),
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "attestation_invalid",
+        evidenceKind: "run_context",
+        keyId: TEST_ATTESTATION_KEY_ID,
+      },
+    });
+  });
+
+  it("rejects a lifecycle-domain signature replayed as run-context evidence", () => {
+    const evidence = runContextEvidence();
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: {
+            payload: evidence.payload,
+            attestation: attestLifecycle(
+              AgentLifecycleEvidencePayloadSchema.parse({
+                specId: runtimeSpec.specId,
+                versionOrChannel: runtimeSpec.version,
+                state: "deployed",
+                assertedAt: "2026-07-23T12:59:00Z",
+                freshnessTtl: 300,
+              }),
+              "acting",
+            ).attestation,
+          },
+        }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_invalid", evidenceKind: "run_context" },
+    });
+  });
+
+  it.each([
+    { specId: "spec-other" },
+    { version: "9.9.9" },
+    { contentHash: "f".repeat(64) },
+  ])("binds the signed run context to the exact acting subject: %s", (payloadOverride) => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: runContextEvidence(runtimeSpec, payloadOverride),
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "run_context_subject_mismatch",
+        specId: runtimeSpec.specId,
+        version: runtimeSpec.version,
+      },
+    });
+  });
+
+  it("isolates cross-trust-domain replay at the run-context content-hash join", () => {
+    const domainBSpec = specFixture({ trustDomainId: "domain-operations" });
+    expect(domainBSpec.contentHash).not.toBe(runtimeSpec.contentHash);
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          spec: domainBSpec,
+          runtimeBindingEvidence: runtimeBindingEvidence(domainBSpec),
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            specId: domainBSpec.specId,
+            versionOrChannel: domainBSpec.version,
+          }),
+          runContextEvidence: runContextEvidence(runtimeSpec),
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "run_context_subject_mismatch",
+        specId: domainBSpec.specId,
+        version: domainBSpec.version,
+      },
+    });
+  });
+
+  it("uses a half-open run-context freshness window with no skew grace", () => {
+    const assertedAt = "2026-07-23T13:00:00Z";
+    const evidence = runContextEvidence(runtimeSpec, { assertedAt, freshnessTtl: 300 });
+
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ runContextEvidence: evidence }),
+        { authorizationTime: assertedAt },
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ runContextEvidence: evidence }),
+        { authorizationTime: "2026-07-23T12:59:59.999Z" },
+      ),
+    ).toMatchObject({ reason: { type: "run_context_not_fresh", condition: "from_future" } });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", { assertedAt }),
+          runContextEvidence: evidence,
+        }),
+        { authorizationTime: "2026-07-23T13:04:59.999Z" },
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T13:04:00Z",
+          }),
+          runContextEvidence: evidence,
+        }),
+        { authorizationTime: "2026-07-23T13:05:00Z" },
+      ),
+    ).toMatchObject({ reason: { type: "run_context_not_fresh", condition: "expired" } });
+  });
+
+  it("compares run-context freshness as absolute instants across offsets", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            assertedAt: "2026-07-23T15:00:00+02:00",
+          }),
+        }),
+        { authorizationTime: "2026-07-23T13:00:00Z" },
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it.each([
+    {
+      overrides: { callContext: callContext({ callChain: ["spec-other"] }) },
+      condition: "call_chain_tail_mismatch",
+    },
+    {
+      overrides: {
+        currentRunId: "run-child",
+        callContext: callContext({ parentRunId: null }),
+      },
+      condition: "root_parent_relation_invalid",
+    },
+    {
+      overrides: {
+        currentRunId: "run-root",
+        callContext: callContext({ parentRunId: "run-parent" }),
+      },
+      condition: "root_parent_relation_invalid",
+    },
+    {
+      overrides: {
+        currentRunId: "run-child",
+        callContext: callContext({ parentRunId: "run-child" }),
+      },
+      condition: "parent_equals_current",
+    },
+  ] as const)("blocks signed but inconsistent topology: $condition", ({ overrides, condition }) => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ runContextEvidence: runContextEvidence(runtimeSpec, overrides) }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "run_context_invalid", condition },
+    });
+  });
+
+  it("pins global and run-context guard precedence before action semantics", () => {
+    const invalidTopology = runContextEvidence(runtimeSpec, {
+      callContext: callContext({ callChain: ["spec-other"] }),
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ runtimeBindingEvidence: undefined, runContextEvidence: invalidTopology }),
+      ),
+    ).toMatchObject({ reason: { type: "runtime_binding_missing" } });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T12:00:00Z",
+          }),
+          runContextEvidence: invalidTopology,
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "lifecycle_evidence_not_fresh", role: "acting" } });
+
+    const forged = mutateSignature(
+      runContextEvidence(runtimeSpec, {
+        specId: "spec-other",
+        assertedAt: "2026-07-23T12:00:00Z",
+        callContext: callContext({ callChain: ["spec-other"] }),
+      }),
+    );
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: forged,
+          action: { type: "tool_call", toolId: "email.send", scope: "tenant:acme:crm" },
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "attestation_invalid", evidenceKind: "run_context" } });
+
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            contentHash: "f".repeat(64),
+            assertedAt: "2026-07-23T12:00:00Z",
+            callContext: callContext({ callChain: ["spec-other"] }),
+          }),
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "run_context_subject_mismatch" } });
+
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            assertedAt: "2026-07-23T12:00:00Z",
+            callContext: callContext({ callChain: ["spec-other"] }),
+          }),
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "run_context_not_fresh", condition: "expired" } });
+
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runContextEvidence: invalidTopology,
+          action: { type: "tool_call", toolId: "email.send", scope: "tenant:acme:crm" },
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "run_context_invalid" } });
+  });
+
+  it("is stateless and therefore allows identical sibling presentations deterministically", () => {
+    const input = agentInput();
+    const first = authorizeRuntimeAction(input);
+    const second = authorizeRuntimeAction(input);
+    expect(second).toEqual(first);
+    expect(first).toMatchObject({
+      outcome: "allowed",
+      actionType: "agent_call",
+      childRunContextDraft: {
+        callContext: { parentRunId: "run-current" },
+      },
+    });
+    if (first.outcome === "allowed" && first.actionType === "agent_call") {
+      expect(Object.keys(first.childRunContextDraft).sort()).toEqual([
+        "callContext",
+        "calleeSpecId",
+        "calleeVersionOrChannel",
+      ]);
+    }
   });
 });
 
@@ -795,18 +1125,22 @@ describe("authorizeRuntimeAction tool semantics", () => {
 });
 
 describe("authorizeRuntimeAction agent calls", () => {
-  it("allows an approved agent call and returns the authorized next context", () => {
+  it("allows an approved agent call and returns an unsigned child run-context draft", () => {
     expect(authorizeRuntimeAction(agentInput())).toEqual({
       outcome: "allowed",
       actionType: "agent_call",
-      nextCallContext: {
-        rootRunId: "run-root",
-        parentRunId: "run-current",
-        callChain: ["spec-crm-enricher", "spec-web-search"],
-        remainingDepth: 0,
-        remainingCallBudget: 1,
-        remainingTokenBudget: 5_000,
-        remainingTimeBudget: 10_000,
+      childRunContextDraft: {
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+        callContext: {
+          rootRunId: "run-root",
+          parentRunId: "run-current",
+          callChain: ["spec-crm-enricher", "spec-web-search"],
+          remainingDepth: 0,
+          remainingCallBudget: 1,
+          remainingTokenBudget: 5_000,
+          remainingTimeBudget: 10_000,
+        },
       },
     });
   });
@@ -1031,8 +1365,10 @@ describe("authorizeRuntimeAction agent calls", () => {
               edgeApproval({ requiresHumanGate: true, allowedIntents: ["delegate"] }),
             ),
           ],
-          callContext: callContext({
-            callChain: ["spec-web-search", "spec-crm-enricher"],
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            callContext: callContext({
+              callChain: ["spec-web-search", "spec-crm-enricher"],
+            }),
           }),
           calleeLifecycleEvidence: mutateSignature(lifecycleEvidence("callee")),
         }),
@@ -1064,7 +1400,11 @@ describe("authorizeRuntimeAction agent calls", () => {
       authorizeRuntimeAction(
         baseInput({
           action: agentAction,
-          callContext: callContext({ callChain: ["spec-web-search", "spec-crm-enricher"] }),
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            callContext: callContext({
+              callChain: ["spec-web-search", "spec-crm-enricher"],
+            }),
+          }),
         }),
       ),
     ).toEqual({
@@ -1153,7 +1493,9 @@ describe("authorizeRuntimeAction agent calls", () => {
             state: "revoked",
             assertedAt: "2026-07-23T10:00:00Z",
           }),
-          callContext: callContext({ remainingDepth: 0, remainingCallBudget: 0 }),
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            callContext: callContext({ remainingDepth: 0, remainingCallBudget: 0 }),
+          }),
         }),
       ),
     ).toMatchObject({ reason: { type: "callee_state_not_callable" } });
@@ -1164,7 +1506,9 @@ describe("authorizeRuntimeAction agent calls", () => {
           calleeLifecycleEvidence: lifecycleEvidence("callee", {
             assertedAt: "2026-07-23T10:00:00Z",
           }),
-          callContext: callContext({ remainingDepth: 0, remainingCallBudget: 0 }),
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            callContext: callContext({ remainingDepth: 0, remainingCallBudget: 0 }),
+          }),
         }),
       ),
     ).toMatchObject({
@@ -1197,6 +1541,9 @@ describe("authorizeRuntimeAction agent calls", () => {
             assertedAt: "2026-07-23T13:00:00Z",
           }),
           calleeLifecycleEvidence: evidence,
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            assertedAt: "2026-07-23T13:00:00Z",
+          }),
         }),
         { authorizationTime: "2026-07-23T13:04:59.999Z" },
       ),
@@ -1208,6 +1555,9 @@ describe("authorizeRuntimeAction agent calls", () => {
             assertedAt: "2026-07-23T13:04:00Z",
           }),
           calleeLifecycleEvidence: evidence,
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            assertedAt: "2026-07-23T13:04:00Z",
+          }),
         }),
         { authorizationTime: "2026-07-23T13:05:00Z" },
       ),
@@ -1270,7 +1620,11 @@ describe("authorizeRuntimeAction agent calls", () => {
     expect(
       authorizeRuntimeAction(
         agentInput({
-          callContext: callContext({ callChain: ["spec-web-search", "spec-crm-enricher"] }),
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            callContext: callContext({
+              callChain: ["spec-web-search", "spec-crm-enricher"],
+            }),
+          }),
           calleeLifecycleEvidence: invalidCallee,
         }),
       ),
@@ -1279,10 +1633,22 @@ describe("authorizeRuntimeAction agent calls", () => {
 
   it("preserves depth, call-budget, and child-budget enforcement", () => {
     expect(
-      authorizeRuntimeAction(agentInput({ callContext: callContext({ remainingDepth: 0 }) })),
+      authorizeRuntimeAction(
+        agentInput({
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            callContext: callContext({ remainingDepth: 0 }),
+          }),
+        }),
+      ),
     ).toMatchObject({ reason: { type: "depth_exhausted" } });
     expect(
-      authorizeRuntimeAction(agentInput({ callContext: callContext({ remainingCallBudget: 0 }) })),
+      authorizeRuntimeAction(
+        agentInput({
+          runContextEvidence: runContextEvidence(runtimeSpec, {
+            callContext: callContext({ remainingCallBudget: 0 }),
+          }),
+        }),
+      ),
     ).toMatchObject({ reason: { type: "call_budget_exhausted" } });
     expect(
       authorizeRuntimeAction(

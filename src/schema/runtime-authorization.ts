@@ -9,17 +9,20 @@ import { AgentSpecContentSchema, type AgentSpecContent } from "./agent-spec-cont
 import {
   AttestedAgentLifecycleEvidenceSchema,
   AttestedCallGraphEdgeApprovalSchema,
+  AttestedRunContextEvidenceSchema,
   AttestedRuntimeBindingEvidenceSchema,
   TrustedAttestationKeysetSchema,
   type AttestationEvidenceKind,
   type AttestedAgentLifecycleEvidence,
   type AttestedCallGraphEdgeApproval,
+  type AttestedRunContextEvidence,
   type AttestedRuntimeBindingEvidence,
   type LifecycleEvidenceRole,
   type LifecycleFreshnessCondition,
+  type RunContextFreshnessCondition,
   type TrustedAttestationKey,
 } from "./runtime-attestation.js";
-import { CallContextSchema, type CallContext } from "./call-context.js";
+import type { CallContext } from "./call-context.js";
 import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
 
 /**
@@ -69,9 +72,8 @@ export const RuntimeAuthorizationInputSchema = z
     runtimeBindingEvidence: AttestedRuntimeBindingEvidenceSchema.optional(),
     actingLifecycleEvidence: AttestedAgentLifecycleEvidenceSchema,
     calleeLifecycleEvidence: AttestedAgentLifecycleEvidenceSchema.optional(),
+    runContextEvidence: AttestedRunContextEvidenceSchema,
     action: RuntimeActionSchema,
-    callContext: CallContextSchema,
-    currentRunId: z.string().min(1),
     attestedEdgeApprovals: z.array(AttestedCallGraphEdgeApprovalSchema),
   })
   .strict();
@@ -81,9 +83,8 @@ export interface RuntimeAuthorizationInput {
   readonly runtimeBindingEvidence?: AttestedRuntimeBindingEvidence | undefined;
   readonly actingLifecycleEvidence: AttestedAgentLifecycleEvidence;
   readonly calleeLifecycleEvidence?: AttestedAgentLifecycleEvidence | undefined;
+  readonly runContextEvidence: AttestedRunContextEvidence;
   readonly action: RuntimeAction;
-  readonly callContext: CallContext;
-  readonly currentRunId: string;
   readonly attestedEdgeApprovals: ReadonlyArray<AttestedCallGraphEdgeApproval>;
 }
 
@@ -118,7 +119,9 @@ export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
   "runtime_authorization_context_invalid",
   "runtime_binding_not_yet_valid",
   "runtime_binding_expired",
-  "call_context_invalid",
+  "run_context_subject_mismatch",
+  "run_context_not_fresh",
+  "run_context_invalid",
   "tool_not_declared",
   "tool_scope_not_allowed",
   "agent_call_not_declared",
@@ -144,6 +147,18 @@ export type RuntimeAuthorizationBlockReasonCode = z.infer<
   typeof RuntimeAuthorizationBlockReasonCodeSchema
 >;
 
+export const RUN_CONTEXT_TOPOLOGY_CONDITIONS = [
+  "call_chain_tail_mismatch",
+  "root_parent_relation_invalid",
+  "parent_equals_current",
+] as const;
+export const RunContextTopologyConditionSchema = z.enum(
+  RUN_CONTEXT_TOPOLOGY_CONDITIONS,
+);
+export type RunContextTopologyCondition = z.infer<
+  typeof RunContextTopologyConditionSchema
+>;
+
 export type RuntimeAuthorizationBlockReason =
   | { readonly type: "input_invalid"; readonly reason: string }
   | { readonly type: "runtime_state_not_executable"; readonly state: string }
@@ -153,7 +168,9 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "runtime_authorization_context_invalid"; readonly reason: string }
   | { readonly type: "runtime_binding_not_yet_valid"; readonly bindingId: string }
   | { readonly type: "runtime_binding_expired"; readonly bindingId: string }
-  | { readonly type: "call_context_invalid"; readonly reason: string }
+  | { readonly type: "run_context_subject_mismatch"; readonly specId: string; readonly version: string }
+  | { readonly type: "run_context_not_fresh"; readonly condition: RunContextFreshnessCondition }
+  | { readonly type: "run_context_invalid"; readonly condition: RunContextTopologyCondition }
   | { readonly type: "tool_not_declared"; readonly toolId: string }
   | { readonly type: "tool_scope_not_allowed"; readonly toolId: string; readonly scope: string }
   | { readonly type: "agent_call_not_declared"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
@@ -191,6 +208,16 @@ export type RuntimeAuthorizationResult =
   | {
       readonly outcome: "allowed";
       readonly actionType: "agent_call";
-      readonly nextCallContext: CallContext;
+      readonly childRunContextDraft: AuthorizedChildRunContextDraft;
     }
   | { readonly outcome: "blocked"; readonly reason: RuntimeAuthorizationBlockReason };
+
+/**
+ * Pure authorization output for an external trusted resolver and signer. The
+ * draft deliberately carries neither a child run id nor signed authority.
+ */
+export interface AuthorizedChildRunContextDraft {
+  readonly calleeSpecId: string;
+  readonly calleeVersionOrChannel: string;
+  readonly callContext: CallContext;
+}

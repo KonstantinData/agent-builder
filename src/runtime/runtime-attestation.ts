@@ -1,6 +1,7 @@
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { canonicalize } from "../assembler/content-hash.js";
 import type {
+  AttestationEvidenceKind,
   AttestationEnvelope,
   TrustedAttestationKey,
 } from "../schema/runtime-attestation.js";
@@ -8,6 +9,7 @@ import {
   ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
   CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
+  RUN_CONTEXT_ATTESTATION_DOMAIN,
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
 } from "../schema/runtime-attestation.js";
 
@@ -16,8 +18,22 @@ export const RUNTIME_ATTESTATION_DOMAINS = [
   ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
   CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+  RUN_CONTEXT_ATTESTATION_DOMAIN,
 ] as const;
 export type RuntimeAttestationDomain = (typeof RUNTIME_ATTESTATION_DOMAINS)[number];
+
+/**
+ * Single source of truth for evidence-kind/domain separation. The Record
+ * binding makes a newly added evidence kind fail typecheck until it receives a
+ * unique, versioned domain instead of relying on manual call-site pairing.
+ */
+export const RUNTIME_ATTESTATION_DOMAIN_BY_EVIDENCE_KIND = {
+  runtime_binding: RUNTIME_BINDING_ATTESTATION_DOMAIN,
+  acting_lifecycle: ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
+  callee_lifecycle: CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
+  call_graph_edge_approval: CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+  run_context: RUN_CONTEXT_ATTESTATION_DOMAIN,
+} as const satisfies Record<AttestationEvidenceKind, RuntimeAttestationDomain>;
 
 /**
  * The envelope is deliberately excluded. Only the strict, schema-validated
