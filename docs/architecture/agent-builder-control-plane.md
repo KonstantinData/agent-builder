@@ -170,6 +170,32 @@ This keeps audit, review, and human-gate logic unified regardless of what is bei
 approved, instead of building parallel approval systems for specs and for call-graph
 edges.
 
+### Runtime Binding / Deployment Executor Boundary v0.1
+
+Runtime Binding v0.1 is the narrow bridge from `approved` to `deployed`. It consumes
+an approved `agent_spec` approval artifact, the exact approved `AgentSpecContent`,
+matching runtime metadata, and a control-plane-asserted binding context. It produces
+an immutable `RuntimeBindingArtifact` plus mutable runtime metadata transitioned to
+`deployed`.
+
+It enforces:
+
+- metadata must already be `approved`; the binding executor never creates approval
+- spec and metadata must match by `spec_id` and `version`
+- approval artifact must be `type: agent_spec`, `decision: approved`, and carry
+  `decided_by`/`decided_at`
+- approval subject must match spec `spec_id`, `version`, and `content_hash`
+- metadata must not already have a deployment binding
+- binding context must supply `binding_id`, `runtime_instance_id`, `deployed_at`,
+  `ttl`, and an explicit `actor` for state history
+
+Runtime Binding v0.1 does not start infrastructure, write a registry, execute tools,
+touch memory, create credentials, perform health checks, or attest runtime identity.
+It records a content-bound runtime binding only. Existing deployment bindings block
+fail-closed; idempotent redeploy/rebind belongs to a later drift/revocation-aware
+slice. `ttl` is transported in metadata and binding artifacts in v0.1, but no runtime
+expiry, heartbeat, or liveness logic evaluates it yet.
+
 ## 8. Agent-to-Agent Call Graph
 
 Default-deny directed graph, not a free mesh:
@@ -249,14 +275,15 @@ call-graph edge approval artifacts, a call context, and a planned runtime action
 returns `allowed` or `blocked` and, for allowed agent-to-agent calls, the derived next
 call context.
 
-The v0.1 executable lifecycle state is deliberately limited to `approved` because the
-Deployment Gate currently stops there and no deployment executor exists yet. Once a
-deployment executor or runtime binding store exists, this boundary should move to
-`deployed`.
+The v0.1 executable lifecycle state is deliberately limited to `deployed`. Runtime
+authorization requires deployment metadata carrying the exact `content_hash` approved
+and bound by the Runtime Binding boundary.
 
 Runtime Harness v0.1 enforces:
 
 - full runtime authorization input validation at the boundary
+- executable metadata state `deployed`, never bare `approved`
+- content-hash consistency between immutable spec content and deployment binding
 - tool calls by exact declared `tool_id` and exact scope string only; there is no scope
   containment inference until a structured scope model exists
 - agent calls by resolved spec declarations and approved `call_graph_edge` artifacts,
@@ -273,9 +300,6 @@ Runtime Harness v0.1 enforces:
 
 Known v0.1 boundaries:
 
-- `AgentSpecRuntimeMetadata` intentionally carries no `content_hash`, so runtime can
-  bind spec content to metadata only by `spec_id` and `version`. The Deployment Gate
-  remains the content-hash-bound approval point.
 - Callee liveness is not checked without callee metadata or a runtime store. The
   harness authorizes the edge and derived context, not whether the callee is currently
   suspended, revoked, or live.

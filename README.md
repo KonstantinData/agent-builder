@@ -21,10 +21,13 @@ BuilderIntentDraft
   -> Policy / Evaluation Harness
   -> Deployment Gate
   -> approved or rejected lifecycle metadata + audit artifact
+  -> Runtime Binding
+  -> deployed lifecycle metadata + binding artifact
 ```
 
-The flow stops at `approved`. Runtime deployment and agent execution belong to the
-future Data Plane and are intentionally outside this package's current scope.
+The flow binds approved content to runtime metadata, but still never starts real
+infrastructure. Runtime deployment and agent execution remain outside this
+package's current scope.
 
 The implemented Data Plane authorization slice is:
 
@@ -69,10 +72,18 @@ already-approved, versioned bindings.
   - enforces separation of duties between requestor and approver
   - emits schema-validated approval evidence and lifecycle transitions
   - fails closed when required evaluation evidence is missing
+- A runtime binding executor boundary that:
+  - accepts only specs already in the `approved` lifecycle state
+  - validates spec, metadata, approval artifact, and trusted binding context
+  - binds runtime metadata back to the approved `contentHash`
+  - emits an immutable `RuntimeBindingArtifact`
+  - transitions lifecycle metadata from `approved` to `deployed`
+  - blocks existing deployment bindings instead of overwriting them
+  - never starts real infrastructure or writes runtime state
 - A runtime authorization harness that:
-  - accepts only the v0.1 executable lifecycle state `approved`
+  - accepts only the v0.1 executable lifecycle state `deployed`
   - validates the full runtime authorization input at the boundary
-  - verifies the acting spec and runtime metadata match by spec ID and version
+  - verifies the acting spec and runtime metadata match by spec ID, version, and binding content hash
   - validates that the acting spec is the tail of the call chain
   - authorizes tool calls only by exact declared tool/scope matches
   - authorizes agent calls only through approved call-graph edge artifacts
@@ -95,6 +106,7 @@ for the architecture and rejected shortcuts.
 ```text
 src/
   assembler/    Draft-to-spec assembly and role resolution
+  deployment/   Runtime binding and deployment-executor boundary
   gate/         Approval decisions and lifecycle transitions
   harness/      Policy and evaluation decisions
   invariants/   Cross-cutting control-plane invariants
@@ -102,6 +114,7 @@ src/
   schema/       Zod schemas and exported TypeScript types
 tests/
   assembler/    Assembly behavior
+  deployment/   Runtime-binding behavior
   gate/         Deployment-gate behavior
   harness/      Policy decision behavior
   invariants/   Invariant checks
@@ -159,6 +172,9 @@ This package intentionally keeps several capabilities out of scope:
 - no approval directly from the `draft` lifecycle state
 - no self-approval by the spec requestor
 - no approval without policy-subject and content-hash binding
+- no runtime binding without approved content-hash-bound approval
+- no runtime binding overwrite/redeploy in v0.1
+- no runtime `ttl` expiry enforcement in v0.1
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
 - no runtime authorization from ambiguous matching call-graph edge approvals
@@ -166,4 +182,4 @@ This package intentionally keeps several capabilities out of scope:
 
 These constraints are enforced in code where the current prototype has enough local
 context, and documented as control-plane requirements where a future registry,
-deployment executor, or runtime store is needed.
+real deployment executor, or runtime store is needed.

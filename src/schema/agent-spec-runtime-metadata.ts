@@ -29,6 +29,8 @@ export type StateHistoryEntry = z.infer<typeof StateHistoryEntrySchema>;
 
 export const DeploymentBindingSchema = z
   .object({
+    bindingId: z.string().min(1),
+    contentHash: z.string().min(1),
     runtimeInstanceId: z.string().min(1),
     deployedAt: z.string().min(1),
     ttl: z.number().positive(),

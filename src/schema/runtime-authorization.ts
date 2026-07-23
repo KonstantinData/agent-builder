@@ -76,6 +76,8 @@ export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
   "input_invalid",
   "runtime_state_not_executable",
   "runtime_subject_mismatch",
+  "runtime_binding_missing",
+  "runtime_binding_content_hash_mismatch",
   "call_context_invalid",
   "tool_not_declared",
   "tool_scope_not_allowed",
@@ -100,6 +102,8 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "input_invalid"; readonly reason: string }
   | { readonly type: "runtime_state_not_executable"; readonly state: string }
   | { readonly type: "runtime_subject_mismatch"; readonly specId: string; readonly version: string }
+  | { readonly type: "runtime_binding_missing"; readonly specId: string; readonly version: string }
+  | { readonly type: "runtime_binding_content_hash_mismatch"; readonly specId: string; readonly version: string }
   | { readonly type: "call_context_invalid"; readonly reason: string }
   | { readonly type: "tool_not_declared"; readonly toolId: string }
   | { readonly type: "tool_scope_not_allowed"; readonly toolId: string; readonly scope: string }

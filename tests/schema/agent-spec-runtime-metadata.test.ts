@@ -17,6 +17,35 @@ describe("AgentSpecRuntimeMetadataSchema", () => {
     expect(AgentSpecRuntimeMetadataSchema.safeParse(validMetadata).success).toBe(true);
   });
 
+  it("accepts deployed metadata with a content-bound deployment binding", () => {
+    const candidate = {
+      ...validMetadata,
+      state: "deployed",
+      deploymentBinding: {
+        bindingId: "binding-crm-enricher-001",
+        contentHash: "hash-v1",
+        runtimeInstanceId: "runtime-crm-enricher-001",
+        deployedAt: "2026-07-23T12:30:00Z",
+        ttl: 3600,
+      },
+    };
+    expect(AgentSpecRuntimeMetadataSchema.safeParse(candidate).success).toBe(true);
+  });
+
+  it("rejects a deployment binding without contentHash", () => {
+    const candidate = {
+      ...validMetadata,
+      state: "deployed",
+      deploymentBinding: {
+        bindingId: "binding-crm-enricher-001",
+        runtimeInstanceId: "runtime-crm-enricher-001",
+        deployedAt: "2026-07-23T12:30:00Z",
+        ttl: 3600,
+      },
+    };
+    expect(AgentSpecRuntimeMetadataSchema.safeParse(candidate).success).toBe(false);
+  });
+
   it("rejects a lifecycle state outside the fixed state machine", () => {
     const candidate = { ...validMetadata, state: "archived" };
     expect(AgentSpecRuntimeMetadataSchema.safeParse(candidate).success).toBe(false);
