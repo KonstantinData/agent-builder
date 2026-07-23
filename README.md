@@ -36,6 +36,7 @@ approved AgentSpecContent + matching RuntimeMetadata
   + CallGraphEdgeApproval artifacts
   + CallContext
   + planned RuntimeAction
+  + TrustedRuntimeAuthorizationContext
   -> Runtime Harness
   -> allowed or blocked authorization result
 ```
@@ -83,7 +84,11 @@ already-approved, versioned bindings.
 - A runtime authorization harness that:
   - accepts only the v0.1 executable lifecycle state `deployed`
   - validates the full runtime authorization input at the boundary
+  - requires an explicit trusted authorization instant with no system-clock fallback
   - verifies the acting spec and runtime metadata match by spec ID, version, and binding content hash
+  - evaluates the acting deployment binding over the half-open lease interval
+    `deployedAt <= authorizationTime < deployedAt + ttl`
+  - treats only `deploymentBinding.ttl` as authoritative for binding validity
   - validates that the acting spec is the tail of the call chain
   - authorizes tool calls only by exact declared tool/scope matches
   - authorizes agent calls only through approved call-graph edge artifacts
@@ -174,7 +179,10 @@ This package intentionally keeps several capabilities out of scope:
 - no approval without policy-subject and content-hash binding
 - no runtime binding without approved content-hash-bound approval
 - no runtime binding overwrite/redeploy in v0.1
-- no runtime `ttl` expiry enforcement in v0.1
+- no implicit runtime clock or `Date.now()` fallback during authorization
+- no metadata mutation or lifecycle transition when a runtime binding expires
+- no process-liveness claim without a heartbeat, runtime store, and runtime lookup
+- no claim that supplied runtime-binding evidence is authentic or untampered
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
 - no runtime authorization from ambiguous matching call-graph edge approvals

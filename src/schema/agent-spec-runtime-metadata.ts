@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { SpecIdSchema } from "./common.js";
+import {
+  Rfc3339WithOffsetSchema,
+  RuntimeBindingTtlSecondsSchema,
+} from "./runtime-binding-validity.js";
 
 /**
  * Section 4 of the architecture doc: schema validation, policy lint, and
@@ -32,8 +36,8 @@ export const DeploymentBindingSchema = z
     bindingId: z.string().min(1),
     contentHash: z.string().min(1),
     runtimeInstanceId: z.string().min(1),
-    deployedAt: z.string().min(1),
-    ttl: z.number().positive(),
+    deployedAt: Rfc3339WithOffsetSchema,
+    ttl: RuntimeBindingTtlSecondsSchema,
     lastHeartbeat: z.string().optional(),
   })
   .strict();

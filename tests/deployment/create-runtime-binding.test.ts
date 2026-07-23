@@ -3,6 +3,7 @@ import { createRuntimeBinding } from "../../src/deployment/create-runtime-bindin
 import { AgentSpecRuntimeMetadataSchema, type AgentSpecRuntimeMetadata } from "../../src/schema/agent-spec-runtime-metadata.js";
 import { ApprovalArtifactSchema, type ApprovalArtifact } from "../../src/schema/approval-artifact.js";
 import type { TrustedRuntimeBindingContext } from "../../src/schema/runtime-binding.js";
+import { MAX_RUNTIME_BINDING_TTL_SECONDS } from "../../src/schema/runtime-binding-validity.js";
 import { validAgentSpecContent } from "../fixtures/specs.js";
 
 function metadataInState(state: string, overrides: Record<string, unknown> = {}): AgentSpecRuntimeMetadata {
@@ -92,6 +93,23 @@ describe("createRuntimeBinding", () => {
     );
     if (result.outcome !== "deployed") throw new Error("expected deployed");
     expect(result.metadata.stateHistory.at(-1)?.reason).toBe("bound to runtime slot a");
+  });
+
+  it("copies the maximum valid TTL and explicit-offset deployedAt through the binding boundary", () => {
+    const result = createRuntimeBinding(
+      { spec: validAgentSpecContent, metadata: approvedMetadata, approval: approval() },
+      {
+        ...ctx,
+        deployedAt: "2026-07-23T14:30:00+02:00",
+        ttl: MAX_RUNTIME_BINDING_TTL_SECONDS,
+      },
+    );
+
+    if (result.outcome !== "deployed") throw new Error("expected deployed");
+    expect(result.binding.deployedAt).toBe("2026-07-23T14:30:00+02:00");
+    expect(result.binding.ttl).toBe(MAX_RUNTIME_BINDING_TTL_SECONDS);
+    expect(result.metadata.deploymentBinding?.deployedAt).toBe("2026-07-23T14:30:00+02:00");
+    expect(result.metadata.deploymentBinding?.ttl).toBe(MAX_RUNTIME_BINDING_TTL_SECONDS);
   });
 
   it.each(["draft", "in_review", "deployed", "suspended", "revoked", "rejected"])(
@@ -210,6 +228,26 @@ describe("createRuntimeBinding", () => {
       createRuntimeBinding(
         { spec: validAgentSpecContent, metadata: approvedMetadata, approval: approval() },
         { ...ctx, actor: "" },
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_context_invalid", reason: "schema_validation_failed" },
+    });
+
+    expect(
+      createRuntimeBinding(
+        { spec: validAgentSpecContent, metadata: approvedMetadata, approval: approval() },
+        { ...ctx, deployedAt: "2026-07-23T12:30:00" },
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_context_invalid", reason: "schema_validation_failed" },
+    });
+
+    expect(
+      createRuntimeBinding(
+        { spec: validAgentSpecContent, metadata: approvedMetadata, approval: approval() },
+        { ...ctx, ttl: MAX_RUNTIME_BINDING_TTL_SECONDS + 1 },
       ),
     ).toEqual({
       outcome: "blocked",

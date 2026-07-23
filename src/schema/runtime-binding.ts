@@ -6,6 +6,10 @@ import {
 } from "./agent-spec-runtime-metadata.js";
 import { ApprovalArtifactSchema, type ApprovalArtifact } from "./approval-artifact.js";
 import { SpecIdSchema } from "./common.js";
+import {
+  Rfc3339WithOffsetSchema,
+  RuntimeBindingTtlSecondsSchema,
+} from "./runtime-binding-validity.js";
 
 export const RuntimeBindingArtifactSchema = z
   .object({
@@ -15,8 +19,8 @@ export const RuntimeBindingArtifactSchema = z
     contentHash: z.string().min(1),
     approvalArtifactId: z.string().min(1),
     runtimeInstanceId: z.string().min(1),
-    deployedAt: z.string().min(1),
-    ttl: z.number().positive(),
+    deployedAt: Rfc3339WithOffsetSchema,
+    ttl: RuntimeBindingTtlSecondsSchema,
   })
   .strict();
 export type RuntimeBindingArtifact = z.infer<typeof RuntimeBindingArtifactSchema>;
@@ -46,8 +50,8 @@ export const TrustedRuntimeBindingContextSchema = z
   .object({
     bindingId: z.string().min(1),
     runtimeInstanceId: z.string().min(1),
-    deployedAt: z.string().min(1),
-    ttl: z.number().positive(),
+    deployedAt: Rfc3339WithOffsetSchema,
+    ttl: RuntimeBindingTtlSecondsSchema,
     actor: z.string().min(1),
     reason: z.string().min(1).optional(),
   })

@@ -1,4 +1,5 @@
 import { detectCycleInChain } from "../invariants/cycle-detection.js";
+import type { DeploymentBinding } from "../schema/agent-spec-runtime-metadata.js";
 import type { CallContext } from "../schema/call-context.js";
 import type { AgentCallPolicyEdge } from "../schema/agent-call-policy-edge.js";
 import type { ApprovalArtifact } from "../schema/approval-artifact.js";
@@ -6,9 +7,13 @@ import type {
   AgentCallRuntimeAction,
   RuntimeAuthorizationInput,
   RuntimeAuthorizationResult,
+  TrustedRuntimeAuthorizationContext,
   ToolCallRuntimeAction,
 } from "../schema/runtime-authorization.js";
-import { RuntimeAuthorizationInputSchema } from "../schema/runtime-authorization.js";
+import {
+  RuntimeAuthorizationInputSchema,
+  TrustedRuntimeAuthorizationContextSchema,
+} from "../schema/runtime-authorization.js";
 import {
   isRuntimeBudgetMonotonic,
   remainingRuntimeBudgetFromContext,
@@ -27,7 +32,37 @@ function isExecutableState(state: string): boolean {
   return RUNTIME_EXECUTABLE_STATES.some((executableState) => executableState === state);
 }
 
-function validateRuntimeSubject(input: RuntimeAuthorizationInput): RuntimeAuthorizationResult | undefined {
+function validateRuntimeBindingValidity(
+  binding: DeploymentBinding,
+  context: TrustedRuntimeAuthorizationContext,
+): RuntimeAuthorizationResult | undefined {
+  // Both values passed strict RFC 3339 schemas. Compare parsed instants rather
+  // than timestamp strings so equivalent offsets have identical semantics.
+  const deployedAtEpochMs = Date.parse(binding.deployedAt);
+  const authorizationTimeEpochMs = Date.parse(context.authorizationTime);
+
+  if (authorizationTimeEpochMs < deployedAtEpochMs) {
+    return {
+      outcome: "blocked",
+      reason: { type: "runtime_binding_not_yet_valid", bindingId: binding.bindingId },
+    };
+  }
+
+  const expiresAtEpochMs = deployedAtEpochMs + binding.ttl * 1_000;
+  if (authorizationTimeEpochMs >= expiresAtEpochMs) {
+    return {
+      outcome: "blocked",
+      reason: { type: "runtime_binding_expired", bindingId: binding.bindingId },
+    };
+  }
+
+  return undefined;
+}
+
+function validateRuntimeSubject(
+  input: RuntimeAuthorizationInput,
+  context: TrustedRuntimeAuthorizationContext,
+): RuntimeAuthorizationResult | undefined {
   if (!isExecutableState(input.metadata.state)) {
     return {
       outcome: "blocked",
@@ -68,7 +103,7 @@ function validateRuntimeSubject(input: RuntimeAuthorizationInput): RuntimeAuthor
     };
   }
 
-  return undefined;
+  return validateRuntimeBindingValidity(input.metadata.deploymentBinding, context);
 }
 
 function validateCallContext(input: RuntimeAuthorizationInput): CallContext | RuntimeAuthorizationResult {
@@ -253,6 +288,10 @@ function authorizeAgentCall(
  * Known v0.1 boundaries:
  * - Runtime metadata is executable only in `deployed` state with a deployment
  *   binding whose contentHash matches the supplied immutable spec content.
+ * - Temporal validity is evaluated over supplied control-plane-asserted binding
+ *   evidence. This slice validates structure, subject binding, content hash,
+ *   and temporal consistency, but does not authenticate the evidence's origin
+ *   or integrity. A future attestation must cover the complete binding artifact.
  * - Parent context spend-down is caller-owned in v0.1. This function returns
  *   the authorized child context; it does not mutate or return the parent
  *   context for later sibling calls.
@@ -264,6 +303,7 @@ function authorizeAgentCall(
  */
 export function authorizeRuntimeAction(
   input: RuntimeAuthorizationInput,
+  context: TrustedRuntimeAuthorizationContext,
 ): RuntimeAuthorizationResult {
   const parsed = RuntimeAuthorizationInputSchema.safeParse(input);
   if (!parsed.success) {
@@ -274,7 +314,19 @@ export function authorizeRuntimeAction(
   }
   const validatedInput = parsed.data;
 
-  const subjectBlock = validateRuntimeSubject(validatedInput);
+  const parsedContext = TrustedRuntimeAuthorizationContextSchema.safeParse(context);
+  if (!parsedContext.success) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "runtime_authorization_context_invalid",
+        reason: "schema_validation_failed",
+      },
+    };
+  }
+  const validatedContext = parsedContext.data;
+
+  const subjectBlock = validateRuntimeSubject(validatedInput, validatedContext);
   if (subjectBlock) {
     return subjectBlock;
   }
