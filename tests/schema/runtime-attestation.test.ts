@@ -8,18 +8,24 @@ import {
   AttestationEnvelopeSchema,
   AttestedAgentLifecycleEvidenceSchema,
   AttestedCallGraphEdgeApprovalSchema,
+  AttestedRunContextEvidenceSchema,
   AttestedRuntimeBindingEvidenceSchema,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
   CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
   Ed25519PublicKeySpkiDerBase64Schema,
   LifecycleEvidenceFreshnessTtlSchema,
   MAX_LIFECYCLE_EVIDENCE_FRESHNESS_SECONDS,
+  MAX_RUN_CONTEXT_EVIDENCE_FRESHNESS_SECONDS,
+  RUN_CONTEXT_ATTESTATION_DOMAIN,
+  RunContextEvidencePayloadSchema,
+  RunContextFreshnessTtlSchema,
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
   TrustedAttestationKeysetSchema,
 } from "../../src/schema/runtime-attestation.js";
 import { RuntimeBindingArtifactSchema } from "../../src/schema/runtime-binding.js";
 import {
   RUNTIME_ATTESTATION_DOMAINS,
+  RUNTIME_ATTESTATION_DOMAIN_BY_EVIDENCE_KIND,
   createAttestationPreimage,
   verifyEd25519Attestation,
 } from "../../src/runtime/runtime-attestation.js";
@@ -30,6 +36,7 @@ import {
   TEST_TRUSTED_ATTESTATION_KEY,
   attestCallGraphEdgeApproval,
   attestRuntimeBinding,
+  attestRunContext,
   signPayload,
 } from "../support/runtime-attestation.js";
 
@@ -74,6 +81,24 @@ const approvalPayload = DecidedCallGraphEdgeApprovalSchema.parse({
   },
 });
 
+const runContextPayload = RunContextEvidencePayloadSchema.parse({
+  specId: "spec-crm-enricher",
+  version: "1.0.0",
+  contentHash: "a".repeat(64),
+  currentRunId: "run-root",
+  callContext: {
+    rootRunId: "run-root",
+    parentRunId: null,
+    callChain: ["spec-crm-enricher"],
+    remainingDepth: 2,
+    remainingCallBudget: 3,
+    remainingTokenBudget: 20_000,
+    remainingTimeBudget: 30_000,
+  },
+  assertedAt: "2026-07-23T12:00:00Z",
+  freshnessTtl: 300,
+});
+
 describe("runtime attestation schemas", () => {
   it("pins all role- and payload-specific domain tags and evidence kinds", () => {
     expect(RUNTIME_BINDING_ATTESTATION_DOMAIN).toBe("agent-builder/attest/runtime-binding/v1");
@@ -86,18 +111,28 @@ describe("runtime attestation schemas", () => {
     expect(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN).toBe(
       "agent-builder/attest/approval/call-graph-edge/v1",
     );
+    expect(RUN_CONTEXT_ATTESTATION_DOMAIN).toBe("agent-builder/attest/run-context/v1");
     expect(RUNTIME_ATTESTATION_DOMAINS).toEqual([
       RUNTIME_BINDING_ATTESTATION_DOMAIN,
       ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
       CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
       CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+      RUN_CONTEXT_ATTESTATION_DOMAIN,
     ]);
     expect(ATTESTATION_EVIDENCE_KINDS).toEqual([
       "runtime_binding",
       "acting_lifecycle",
       "callee_lifecycle",
       "call_graph_edge_approval",
+      "run_context",
     ]);
+    expect(RUNTIME_ATTESTATION_DOMAIN_BY_EVIDENCE_KIND).toEqual({
+      runtime_binding: RUNTIME_BINDING_ATTESTATION_DOMAIN,
+      acting_lifecycle: ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
+      callee_lifecycle: CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
+      call_graph_edge_approval: CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+      run_context: RUN_CONTEXT_ATTESTATION_DOMAIN,
+    });
   });
 
   it("accepts only positive whole-second lifecycle freshness up to 300 seconds", () => {
@@ -106,6 +141,30 @@ describe("runtime attestation schemas", () => {
     expect(LifecycleEvidenceFreshnessTtlSchema.safeParse(300).success).toBe(true);
     for (const value of [0, -1, 0.5, 301, Number.POSITIVE_INFINITY, Number.NaN]) {
       expect(LifecycleEvidenceFreshnessTtlSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  it("accepts only positive whole-second run-context freshness up to 300 seconds", () => {
+    expect(MAX_RUN_CONTEXT_EVIDENCE_FRESHNESS_SECONDS).toBe(300);
+    expect(RunContextFreshnessTtlSchema.safeParse(1).success).toBe(true);
+    expect(RunContextFreshnessTtlSchema.safeParse(300).success).toBe(true);
+    for (const value of [0, -1, 0.5, 301, Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(RunContextFreshnessTtlSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  it("requires strict complete run-context payloads with non-empty run identities", () => {
+    expect(RunContextEvidencePayloadSchema.safeParse(runContextPayload).success).toBe(true);
+    for (const invalid of [
+      { ...runContextPayload, currentRunId: "" },
+      { ...runContextPayload, assertedAt: "2026-07-23T12:00:00" },
+      { ...runContextPayload, freshnessTtl: 301 },
+      { ...runContextPayload, callContext: { ...runContextPayload.callContext, rootRunId: "" } },
+      { ...runContextPayload, callContext: { ...runContextPayload.callContext, parentRunId: "" } },
+      { ...runContextPayload, callContext: { ...runContextPayload.callContext, callChain: [] } },
+      { ...runContextPayload, extra: "field" },
+    ]) {
+      expect(RunContextEvidencePayloadSchema.safeParse(invalid).success).toBe(false);
     }
   });
 
@@ -204,9 +263,11 @@ describe("runtime attestation schemas", () => {
     };
     const bindingEvidence = attestRuntimeBinding(bindingPayload);
     const approvalEvidence = attestCallGraphEdgeApproval(approvalPayload);
+    const runContextEvidence = attestRunContext(runContextPayload);
     expect(AttestedAgentLifecycleEvidenceSchema.safeParse(lifecycleEvidence).success).toBe(true);
     expect(AttestedRuntimeBindingEvidenceSchema.safeParse(bindingEvidence).success).toBe(true);
     expect(AttestedCallGraphEdgeApprovalSchema.safeParse(approvalEvidence).success).toBe(true);
+    expect(AttestedRunContextEvidenceSchema.safeParse(runContextEvidence).success).toBe(true);
     expect(
       AttestedAgentLifecycleEvidenceSchema.safeParse({ ...lifecycleEvidence, keyId: "outside-envelope" }).success,
     ).toBe(false);
@@ -274,6 +335,36 @@ describe("runtime attestation canonical preimages and Ed25519 vectors", () => {
       verifyEd25519Attestation(
         CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
         approvalPayload,
+        envelope,
+        TEST_TRUSTED_ATTESTATION_KEY,
+      ),
+    ).toBe(true);
+  });
+
+  it("pins an independent run-context canonical preimage and signature vector", () => {
+    const canonicalJson =
+      '{"assertedAt":"2026-07-23T12:00:00Z","callContext":{"callChain":["spec-crm-enricher"],"parentRunId":null,"remainingCallBudget":3,"remainingDepth":2,"remainingTimeBudget":30000,"remainingTokenBudget":20000,"rootRunId":"run-root"},"contentHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","currentRunId":"run-root","freshnessTtl":300,"specId":"spec-crm-enricher","version":"1.0.0"}';
+    const expectedPreimage = Buffer.from(
+      `${RUN_CONTEXT_ATTESTATION_DOMAIN}\n${canonicalJson}`,
+      "utf8",
+    );
+    const preimage = createAttestationPreimage(
+      RUN_CONTEXT_ATTESTATION_DOMAIN,
+      runContextPayload,
+    );
+    expect(preimage).toEqual(expectedPreimage);
+    expect(preimage.toString("hex")).toBe(
+      "6167656e742d6275696c6465722f6174746573742f72756e2d636f6e746578742f76310a7b2261737365727465644174223a22323032362d30372d32335431323a30303a30305a222c2263616c6c436f6e74657874223a7b2263616c6c436861696e223a5b22737065632d63726d2d656e726963686572225d2c22706172656e7452756e4964223a6e756c6c2c2272656d61696e696e6743616c6c427564676574223a332c2272656d61696e696e674465707468223a322c2272656d61696e696e6754696d65427564676574223a33303030302c2272656d61696e696e67546f6b656e427564676574223a32303030302c22726f6f7452756e4964223a2272756e2d726f6f74227d2c22636f6e74656e7448617368223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2263757272656e7452756e4964223a2272756e2d726f6f74222c2266726573686e65737354746c223a3330302c22737065634964223a22737065632d63726d2d656e726963686572222c2276657273696f6e223a22312e302e30227d",
+    );
+
+    const envelope = signPayload(RUN_CONTEXT_ATTESTATION_DOMAIN, runContextPayload);
+    expect(envelope.signatureBase64).toBe(
+      "O/gpgBYP/mTvYMNMxvzsHRxWDHmEPY9LfagUdxKhsXFahm6yfsZrtWqo9JiqrQROp73cf79mFfKak1kT50DkDQ==",
+    );
+    expect(
+      verifyEd25519Attestation(
+        RUN_CONTEXT_ATTESTATION_DOMAIN,
+        runContextPayload,
         envelope,
         TEST_TRUSTED_ATTESTATION_KEY,
       ),
@@ -411,6 +502,69 @@ describe("runtime attestation canonical preimages and Ed25519 vectors", () => {
           CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
           mutated,
           envelope,
+          TEST_TRUSTED_ATTESTATION_KEY,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("binds every run-context subject, identity, freshness, chain, and budget field", () => {
+    const envelope = signPayload(RUN_CONTEXT_ATTESTATION_DOMAIN, runContextPayload);
+    const topLevelMutations = Object.keys(runContextPayload)
+      .filter((key) => key !== "callContext")
+      .map((key) => ({
+        ...runContextPayload,
+        [key]: `${String(runContextPayload[key as keyof typeof runContextPayload])}-changed`,
+      }));
+    const callContextMutations = Object.keys(runContextPayload.callContext).map((key) => ({
+      ...runContextPayload,
+      callContext: {
+        ...runContextPayload.callContext,
+        [key]:
+          key === "callChain"
+            ? ["spec-other"]
+            : key === "parentRunId" || key === "rootRunId"
+              ? "run-other"
+              : Number(runContextPayload.callContext[key as keyof typeof runContextPayload.callContext]) + 1,
+      },
+    }));
+
+    for (const mutated of [...topLevelMutations, ...callContextMutations]) {
+      expect(
+        verifyEd25519Attestation(
+          RUN_CONTEXT_ATTESTATION_DOMAIN,
+          mutated,
+          envelope,
+          TEST_TRUSTED_ATTESTATION_KEY,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("prevents run-context signatures from replaying across every earlier evidence domain", () => {
+    const runContextEnvelope = signPayload(
+      RUN_CONTEXT_ATTESTATION_DOMAIN,
+      runContextPayload,
+    );
+    for (const domain of [
+      RUNTIME_BINDING_ATTESTATION_DOMAIN,
+      ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
+      CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
+      CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
+    ] as const) {
+      expect(
+        verifyEd25519Attestation(
+          domain,
+          runContextPayload,
+          runContextEnvelope,
+          TEST_TRUSTED_ATTESTATION_KEY,
+        ),
+      ).toBe(false);
+      expect(
+        verifyEd25519Attestation(
+          RUN_CONTEXT_ATTESTATION_DOMAIN,
+          runContextPayload,
+          signPayload(domain, runContextPayload),
           TEST_TRUSTED_ATTESTATION_KEY,
         ),
       ).toBe(false);

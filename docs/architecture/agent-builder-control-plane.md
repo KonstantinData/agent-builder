@@ -279,10 +279,11 @@ Runtime Harness v0.1 is a Data Plane authorization slice, not an execution runti
 It consumes an already-approved spec version, a signed full runtime-binding artifact,
 required signed lifecycle evidence for the acting spec, optional signed lifecycle
 evidence for an agent-call target, decided and signed call-graph edge approval
-artifacts, a call context, and a planned runtime action. Its trusted context supplies
-the authorization instant and evidence-scoped Ed25519 public-key set. It returns
-`allowed` or `blocked` and, for allowed agent-to-agent calls, the derived next call
-context.
+artifacts, required signed run-context evidence, and a planned runtime action. Its
+trusted context supplies the authorization instant and evidence-scoped Ed25519
+public-key set. It returns
+`allowed` or `blocked` and, for allowed agent-to-agent calls, an unsigned child
+run-context draft for an external trusted resolver and signer.
 
 Mutable `AgentSpecRuntimeMetadata` is deliberately not a runtime authorization input.
 The signed `RuntimeBindingArtifact` supplies immutable deployment identity, content
@@ -307,7 +308,10 @@ Runtime Harness v0.1 enforces:
 - ambiguous matching edge approvals fail-closed, so array order never decides
   runtime authorization
 - human-gated edges fail-closed
-- call-context validity, including the acting spec as the tail of `call_chain`
+- exact-subject signed run-context evidence carrying the sole run identity, call chain,
+  and remaining-budget truth with at most 300 seconds of freshness
+- semantic run topology, including the acting spec as the tail of `call_chain` and
+  consistent root/parent/current-run relations
 - cycle rejection using the full call chain
 - exact-subject signed lifecycle evidence for agent-call targets, with only `deployed`
   currently callable and at most 300 seconds of freshness
@@ -358,7 +362,11 @@ authorization input schema
   -> acting lifecycle subject match
   -> acting state executable
   -> acting lifecycle freshness
-  -> call context
+  -> run-context attestation key known
+  -> run-context signature valid
+  -> run-context subject and recomputed content hash match
+  -> run-context freshness
+  -> run-context topology
   -> planned action
 ```
 
@@ -475,6 +483,10 @@ AttestedAgentLifecycleEvidence
   payload: AgentLifecycleEvidencePayload
   attestation: AttestationEnvelope
 
+AttestedRunContextEvidence
+  payload: RunContextEvidencePayload
+  attestation: AttestationEnvelope
+
 AttestationEnvelope
   key_id
   signature_base64                  # canonical base64, exactly 64 decoded bytes
@@ -502,15 +514,21 @@ UTF8(DOMAIN_TAG + "\n" + JSON.stringify(canonicalize(validated_payload)))
 Only the strict schema-validated payload is signed. The envelope, key ID, and
 signature are not part of the signed bytes. Step-10 binding and lifecycle payload
 fields are all required and use only strings and integers; no optional or
-floating-point Step-10 signed field is permitted. Four versioned domain tags now
-prevent type and role replay across Steps 10 and 11:
+floating-point Step-10 signed field is permitted. Five versioned domain tags now
+prevent type and role replay across Steps 10 through 12:
 
 ```text
 agent-builder/attest/runtime-binding/v1
 agent-builder/attest/lifecycle/acting/v1
 agent-builder/attest/lifecycle/callee/v1
 agent-builder/attest/approval/call-graph-edge/v1
+agent-builder/attest/run-context/v1
 ```
+
+The runtime derives domains only through a typed
+`RUNTIME_ATTESTATION_DOMAIN_BY_EVIDENCE_KIND` map. Verification call sites provide an
+evidence kind, not an independently paired domain. Adding a kind without a domain
+therefore fails typecheck instead of creating a cross-type replay gap.
 
 The runtime binding payload is the complete `RuntimeBindingArtifact`, including
 `spec_id`, `version`, `content_hash`, deployment lease, runtime identity, and approval
@@ -613,6 +631,97 @@ No new reason type is introduced. `attestation_key_unknown` and
 `attestation_invalid` use evidence kind `call_graph_edge_approval`; the existing edge
 policy reasons remain unchanged.
 
+### Run Context / Run Identity Attestation v0.1
+
+Step 12 removes raw `call_context` and `current_run_id` from
+`RuntimeAuthorizationInput`. Their only authority source is required signed evidence:
+
+```text
+AttestedRunContextEvidence
+  payload
+    spec_id
+    version
+    content_hash
+    current_run_id
+    call_context
+      root_run_id
+      parent_run_id
+      call_chain[]
+      remaining_depth
+      remaining_call_budget
+      remaining_token_budget
+      remaining_time_budget
+    asserted_at
+    freshness_ttl
+  attestation
+    key_id
+    signature_base64
+```
+
+Run IDs are non-empty opaque strings. The payload is strict and uses evidence kind
+`run_context` with domain `agent-builder/attest/run-context/v1`. Its subject is the
+flat `spec_id`, `version`, and `content_hash` triple. `trust_domain_id` is not repeated:
+it is immutable spec content and is already committed by the recomputed content hash.
+Authorization requires:
+
+```text
+payload.spec_id == spec.spec_id
+payload.version == spec.version
+payload.content_hash == spec.content_hash
+payload.content_hash == recompute_hash(spec_without_content_hash)
+```
+
+The signed `call_context` is the sole chain and remaining-budget input. Its call chain
+is non-empty and contains spec IDs, not run IDs. The tail must equal the signed
+`spec_id`. Root and child claims are semantically consistent only when:
+
+```text
+parent_run_id is null  <=>  current_run_id == root_run_id
+parent_run_id is not null  =>  parent_run_id != current_run_id
+```
+
+Relational topology is evaluated only after key scope, signature, subject, and
+freshness. It uses the closed conditions `call_chain_tail_mismatch`,
+`root_parent_relation_invalid`, and `parent_equals_current`. Structural schema failure
+remains `input_invalid`; semantic failures use `run_context_invalid`.
+
+Freshness reuses the existing deterministic half-open evidence model with a separate
+hard ceiling of 300 seconds:
+
+```text
+fresh_until_ms = asserted_at_instant_ms + freshness_ttl * 1000
+
+fresh when:
+  asserted_at_instant_ms <= authorization_time_instant_ms < fresh_until_ms
+```
+
+There is no skew grace and no implicit clock. The new semantic reasons are
+`run_context_subject_mismatch`, `run_context_not_fresh` with condition `from_future`
+or `expired`, and `run_context_invalid`. Generic `attestation_key_unknown` and
+`attestation_invalid` carry evidence kind `run_context`; `call_context_invalid` is
+retired.
+
+An allowed tool call produces no context output. An allowed agent call returns only:
+
+```text
+AuthorizedChildRunContextDraft
+  callee_spec_id
+  callee_version_or_channel
+  call_context                    # deterministically spent down from verified parent
+```
+
+The draft has no child run ID, resolved immutable callee version, content hash,
+assertion time, TTL, key, or signature. It is not runtime authority. An external
+trusted resolver must resolve the opaque callee version/channel and a signer must
+issue a new `AttestedRunContextEvidence` for the child. The Harness verifies public
+signatures only and remains pure and stateless.
+
+Run-context attestation proves the origin and integrity of the presented run claims.
+It does not consume parent budget, prevent sibling or nonce replay, prove that the
+claimed parent issued the child, attest current run identity, resolve channels, sign,
+hold private keys, query a runtime store, or prove process liveness. Freshness narrows
+the replay window but does not provide single-use semantics.
+
 Known v0.1 boundaries:
 
 - Signed lifecycle freshness bounds evidence age but does not prove synchronous
@@ -622,12 +731,10 @@ Known v0.1 boundaries:
   not later revoked, or that an old valid approval is not being replayed. `decided_at`
   is audit evidence, not a freshness lease. Approval versioning, revocation lookup,
   and time-bounded authority evidence remain later slices.
-- Parent context spend-down is caller-owned in v0.1. The harness returns the authorized
-  child context for an agent call; it does not mutate or return the parent context for
-  later sibling calls.
-- Call context, `current_run_id`, cycle chain, depth, and remaining budget are
-  caller-supplied and unattested. Run identity and spend-down attestation is
-  implementation Step 12.
+- Parent context, `current_run_id`, cycle chain, depth, and remaining budgets are now
+  authenticated as presented evidence. The harness still does not mutate or return a
+  consumed parent context for later sibling calls, so aggregate sibling spend-down is
+  not proven.
 - Process liveness is not proven. That requires heartbeat evidence, a runtime store,
   and a runtime lookup, none of which this slice performs.
 - Key issuance, private-key custody, KMS/HSM, CRL or other key-revocation distribution,

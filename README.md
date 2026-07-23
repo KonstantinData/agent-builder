@@ -36,7 +36,7 @@ approved AgentSpecContent
   + AttestedRuntimeBindingEvidence
   + required AttestedAgentLifecycleEvidence for the acting spec
   + AttestedCallGraphEdgeApproval artifacts
-  + CallContext
+  + required AttestedRunContextEvidence
   + planned RuntimeAction
   + TrustedRuntimeAuthorizationContext (authorization time + evidence-scoped public keyset)
   + AttestedAgentLifecycleEvidence for agent-call targets
@@ -90,6 +90,8 @@ already-approved, versioned bindings.
     public-key set with no system-clock or caller-key fallback
   - requires every trusted key to declare the exact evidence kinds it may verify;
     an absent or wrongly scoped key is indistinguishably fail-closed
+  - derives every attestation domain from one typed evidence-kind/domain map so a
+    newly added evidence kind cannot silently drift at individual call sites
   - verifies a domain-separated Ed25519 signature over the complete
     `RuntimeBindingArtifact`
   - recomputes the presented immutable spec content hash and requires it to match
@@ -103,7 +105,10 @@ already-approved, versioned bindings.
   - accepts only acting state `deployed` as executable and callee state `deployed` as
     callable while keeping those policy concepts separate
   - rejects future-dated lifecycle assertions without clock-skew grace
-  - validates that the acting spec is the tail of the call chain
+  - removes raw call context and run identity from the authorization input and accepts
+    them only inside required, signed, content-bound `AttestedRunContextEvidence`
+  - verifies run-context subject, half-open freshness, acting-spec chain tail, and
+    root/parent/current-run relations before any planned action guard
   - authorizes tool calls only by exact declared tool/scope matches
   - authorizes agent calls only through complete, decided, Ed25519-attested
     call-graph edge approval artifacts
@@ -121,7 +126,8 @@ already-approved, versioned bindings.
     inspecting its key, signature, decision, or policy fields
   - blocks ambiguous matching edge approvals fail-closed
   - blocks human-gated edges fail-closed
-  - derives the next call context only for allowed agent calls
+  - derives an unsigned child run-context draft only for allowed agent calls; an
+    external trusted resolver and signer must assign the child identity and authority
   - enforces runtime budget monotonicity across call, token, and time budgets
 - Runtime/control invariants for:
   - executable-boundary checks
@@ -216,8 +222,9 @@ This package intentionally keeps several capabilities out of scope:
 - no proof that a presented, validly attested call-graph approval is the latest
   canonical decision, has not been revoked, or is protected against replay; approval
   versioning, revocation lookup, and authority freshness remain future slices
-- no attestation of call context, run identity, cycle chain, or spend-down state until
-  implementation Step 12
+- no parent-budget consumption, sibling/nonce replay protection, or proof that a
+  presented parent run actually issued a child context; those require a runtime store
+  or parent-decision linkage beyond signed run-context integrity
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
 - no runtime authorization from ambiguous matching call-graph edge approvals

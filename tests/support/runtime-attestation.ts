@@ -5,7 +5,9 @@ import type {
   AttestationEnvelope,
   AttestedAgentLifecycleEvidence,
   AttestedCallGraphEdgeApproval,
+  AttestedRunContextEvidence,
   AttestedRuntimeBindingEvidence,
+  RunContextEvidencePayload,
   TrustedAttestationKey,
 } from "../../src/schema/runtime-attestation.js";
 import {
@@ -13,6 +15,7 @@ import {
   ATTESTATION_EVIDENCE_KINDS,
   CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
+  RUN_CONTEXT_ATTESTATION_DOMAIN,
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
 } from "../../src/schema/runtime-attestation.js";
 import type { RuntimeBindingArtifact } from "../../src/schema/runtime-binding.js";
@@ -89,5 +92,14 @@ export function attestCallGraphEdgeApproval(
   return {
     payload,
     attestation: signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, payload),
+  };
+}
+
+export function attestRunContext(
+  payload: RunContextEvidencePayload,
+): AttestedRunContextEvidence {
+  return {
+    payload,
+    attestation: signPayload(RUN_CONTEXT_ATTESTATION_DOMAIN, payload),
   };
 }

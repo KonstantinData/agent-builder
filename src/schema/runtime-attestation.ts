@@ -6,6 +6,12 @@ import {
   type DecidedCallGraphEdgeApproval,
 } from "./approval-artifact.js";
 import { SpecIdSchema, type SpecId } from "./common.js";
+import {
+  CallContextSchema,
+  RunIdSchema,
+  type CallContext,
+  type RunId,
+} from "./call-context.js";
 import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
 import { RuntimeBindingArtifactSchema, type RuntimeBindingArtifact } from "./runtime-binding.js";
 
@@ -17,12 +23,15 @@ export const CALLEE_LIFECYCLE_ATTESTATION_DOMAIN =
   "agent-builder/attest/lifecycle/callee/v1";
 export const CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN =
   "agent-builder/attest/approval/call-graph-edge/v1";
+export const RUN_CONTEXT_ATTESTATION_DOMAIN =
+  "agent-builder/attest/run-context/v1";
 
 export const ATTESTATION_EVIDENCE_KINDS = [
   "runtime_binding",
   "acting_lifecycle",
   "callee_lifecycle",
   "call_graph_edge_approval",
+  "run_context",
 ] as const;
 export const AttestationEvidenceKindSchema = z.enum(ATTESTATION_EVIDENCE_KINDS);
 export type AttestationEvidenceKind = z.infer<typeof AttestationEvidenceKindSchema>;
@@ -36,6 +45,21 @@ export const LifecycleEvidenceFreshnessTtlSchema = z
   .max(MAX_LIFECYCLE_EVIDENCE_FRESHNESS_SECONDS);
 export type LifecycleEvidenceFreshnessTtl = z.infer<
   typeof LifecycleEvidenceFreshnessTtlSchema
+>;
+
+export const MAX_RUN_CONTEXT_EVIDENCE_FRESHNESS_SECONDS = 300;
+
+export const RunContextFreshnessTtlSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(MAX_RUN_CONTEXT_EVIDENCE_FRESHNESS_SECONDS);
+export type RunContextFreshnessTtl = z.infer<typeof RunContextFreshnessTtlSchema>;
+
+export const RUN_CONTEXT_FRESHNESS_CONDITIONS = ["from_future", "expired"] as const;
+export const RunContextFreshnessConditionSchema = z.enum(RUN_CONTEXT_FRESHNESS_CONDITIONS);
+export type RunContextFreshnessCondition = z.infer<
+  typeof RunContextFreshnessConditionSchema
 >;
 
 function isCanonicalBase64(value: string, expectedByteLength?: number): boolean {
@@ -164,6 +188,49 @@ export const AttestedCallGraphEdgeApprovalSchema = z
   .strict();
 export const _attestedCallGraphEdgeApprovalTypeBinding =
   AttestedCallGraphEdgeApprovalSchema satisfies z.ZodType<AttestedCallGraphEdgeApproval>;
+
+/**
+ * Signed Data Plane evidence for the acting run. The subject triple binds the
+ * context to immutable AgentSpecContent; contentHash already commits to the
+ * spec trust domain, so no second trust-domain field is introduced here.
+ */
+export interface RunContextEvidencePayload {
+  readonly specId: SpecId;
+  readonly version: string;
+  readonly contentHash: string;
+  readonly currentRunId: RunId;
+  readonly callContext: CallContext;
+  readonly assertedAt: string;
+  readonly freshnessTtl: RunContextFreshnessTtl;
+}
+
+export const RunContextEvidencePayloadSchema = z
+  .object({
+    specId: SpecIdSchema,
+    version: z.string().min(1),
+    contentHash: z.string().min(1),
+    currentRunId: RunIdSchema,
+    callContext: CallContextSchema,
+    assertedAt: Rfc3339WithOffsetSchema,
+    freshnessTtl: RunContextFreshnessTtlSchema,
+  })
+  .strict();
+export const _runContextEvidencePayloadTypeBinding =
+  RunContextEvidencePayloadSchema satisfies z.ZodType<RunContextEvidencePayload>;
+
+export interface AttestedRunContextEvidence {
+  readonly payload: RunContextEvidencePayload;
+  readonly attestation: AttestationEnvelope;
+}
+
+export const AttestedRunContextEvidenceSchema = z
+  .object({
+    payload: RunContextEvidencePayloadSchema,
+    attestation: AttestationEnvelopeSchema,
+  })
+  .strict();
+export const _attestedRunContextEvidenceTypeBinding =
+  AttestedRunContextEvidenceSchema satisfies z.ZodType<AttestedRunContextEvidence>;
 
 export interface TrustedAttestationKey {
   readonly keyId: string;
