@@ -21,10 +21,21 @@ function metadataInState(state: string): AgentSpecRuntimeMetadata {
       { state, actor: "release-manager", timestamp: "2026-07-23T12:00:00Z", reason: "test state" },
     ],
     requestor: "builder-agent",
+    ...(state === "deployed"
+      ? {
+          deploymentBinding: {
+            bindingId: "binding-crm-enricher-001",
+            contentHash: "hash-v1",
+            runtimeInstanceId: "runtime-crm-enricher-001",
+            deployedAt: "2026-07-23T12:30:00Z",
+            ttl: 3600,
+          },
+        }
+      : {}),
   });
 }
 
-const executableMetadata = metadataInState("approved");
+const executableMetadata = metadataInState("deployed");
 
 function callContext(overrides: Record<string, unknown> = {}): CallContext {
   return CallContextSchema.parse({
@@ -89,7 +100,7 @@ describe("authorizeRuntimeAction", () => {
     expect(authorizeRuntimeAction(baseInput())).toEqual({ outcome: "allowed", actionType: "tool_call" });
   });
 
-  it.each(["draft", "in_review", "deployed", "suspended", "revoked", "rejected"])(
+  it.each(["draft", "in_review", "approved", "suspended", "revoked", "rejected"])(
     "blocks non-v0.1-executable state `%s`",
     (state) => {
       expect(authorizeRuntimeAction(baseInput({ metadata: metadataInState(state) }))).toEqual({
@@ -104,6 +115,35 @@ describe("authorizeRuntimeAction", () => {
     expect(authorizeRuntimeAction(baseInput({ metadata }))).toEqual({
       outcome: "blocked",
       reason: { type: "runtime_subject_mismatch", specId: "spec-crm-enricher", version: "1.0.0" },
+    });
+  });
+
+  it("blocks deployed metadata without a deployment binding", () => {
+    const metadata = AgentSpecRuntimeMetadataSchema.parse({
+      ...executableMetadata,
+      deploymentBinding: undefined,
+    });
+    expect(authorizeRuntimeAction(baseInput({ metadata }))).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_binding_missing", specId: "spec-crm-enricher", version: "1.0.0" },
+    });
+  });
+
+  it("blocks when deployment binding contentHash does not match the acting spec", () => {
+    const metadata = AgentSpecRuntimeMetadataSchema.parse({
+      ...executableMetadata,
+      deploymentBinding: {
+        ...executableMetadata.deploymentBinding,
+        contentHash: "hash-other",
+      },
+    });
+    expect(authorizeRuntimeAction(baseInput({ metadata }))).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_content_hash_mismatch",
+        specId: "spec-crm-enricher",
+        version: "1.0.0",
+      },
     });
   });
 

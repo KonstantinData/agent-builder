@@ -81,9 +81,9 @@ already-approved, versioned bindings.
   - blocks existing deployment bindings instead of overwriting them
   - never starts real infrastructure or writes runtime state
 - A runtime authorization harness that:
-  - accepts only the v0.1 executable lifecycle state `approved`
+  - accepts only the v0.1 executable lifecycle state `deployed`
   - validates the full runtime authorization input at the boundary
-  - verifies the acting spec and runtime metadata match by spec ID and version
+  - verifies the acting spec and runtime metadata match by spec ID, version, and binding content hash
   - validates that the acting spec is the tail of the call chain
   - authorizes tool calls only by exact declared tool/scope matches
   - authorizes agent calls only through approved call-graph edge artifacts

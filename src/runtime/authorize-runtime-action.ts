@@ -14,7 +14,7 @@ import {
   remainingRuntimeBudgetFromContext,
 } from "./runtime-budget.js";
 
-export const RUNTIME_EXECUTABLE_STATES = ["approved"] as const;
+export const RUNTIME_EXECUTABLE_STATES = ["deployed"] as const;
 type CallGraphEdgeApproval = Extract<ApprovalArtifact, { readonly type: "call_graph_edge" }>;
 
 function isApprovedCallGraphEdgeApproval(
@@ -40,6 +40,28 @@ function validateRuntimeSubject(input: RuntimeAuthorizationInput): RuntimeAuthor
       outcome: "blocked",
       reason: {
         type: "runtime_subject_mismatch",
+        specId: input.spec.specId,
+        version: input.spec.version,
+      },
+    };
+  }
+
+  if (input.metadata.deploymentBinding === undefined) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_missing",
+        specId: input.spec.specId,
+        version: input.spec.version,
+      },
+    };
+  }
+
+  if (input.metadata.deploymentBinding.contentHash !== input.spec.contentHash) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_content_hash_mismatch",
         specId: input.spec.specId,
         version: input.spec.version,
       },
@@ -229,9 +251,8 @@ function authorizeAgentCall(
  * memory, registry, DB, deployment state, or human-gate decisions.
  *
  * Known v0.1 boundaries:
- * - Runtime metadata intentionally carries no contentHash, so this harness can
- *   bind spec <-> metadata only by specId/version. The gate remains the
- *   contentHash-bound approval point.
+ * - Runtime metadata is executable only in `deployed` state with a deployment
+ *   binding whose contentHash matches the supplied immutable spec content.
  * - Parent context spend-down is caller-owned in v0.1. This function returns
  *   the authorized child context; it does not mutate or return the parent
  *   context for later sibling calls.
