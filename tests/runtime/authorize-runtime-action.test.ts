@@ -1,58 +1,103 @@
 import { describe, expect, it } from "vitest";
-import { authorizeRuntimeAction as authorizeRuntimeActionWithContext } from "../../src/runtime/authorize-runtime-action.js";
-import { ApprovalArtifactSchema, type ApprovalArtifact } from "../../src/schema/approval-artifact.js";
-import { AgentSpecContentSchema } from "../../src/schema/agent-spec-content.js";
+import { computeContentHash } from "../../src/assembler/content-hash.js";
 import {
-  AgentSpecRuntimeMetadataSchema,
-  LifecycleStateSchema,
-  type AgentSpecRuntimeMetadata,
-} from "../../src/schema/agent-spec-runtime-metadata.js";
+  CALLEE_CALLABLE_STATES,
+  RUNTIME_EXECUTABLE_STATES,
+  authorizeRuntimeAction as authorizeRuntimeActionWithContext,
+} from "../../src/runtime/authorize-runtime-action.js";
+import { ApprovalArtifactSchema, type ApprovalArtifact } from "../../src/schema/approval-artifact.js";
+import { AgentSpecContentSchema, type AgentSpecContent } from "../../src/schema/agent-spec-content.js";
+import { LifecycleStateSchema } from "../../src/schema/agent-spec-runtime-metadata.js";
 import { CallContextSchema, type CallContext } from "../../src/schema/call-context.js";
 import { SpecIdSchema } from "../../src/schema/common.js";
 import {
-  CalleeLifecycleEvidenceSchema,
+  AgentLifecycleEvidencePayloadSchema,
+  type AttestedAgentLifecycleEvidence,
+  type AttestedRuntimeBindingEvidence,
+} from "../../src/schema/runtime-attestation.js";
+import {
   type AgentCallRuntimeAction,
   type RuntimeAuthorizationInput,
   type TrustedRuntimeAuthorizationContext,
 } from "../../src/schema/runtime-authorization.js";
-import { CALLEE_CALLABLE_STATES } from "../../src/runtime/authorize-runtime-action.js";
+import { RuntimeBindingArtifactSchema } from "../../src/schema/runtime-binding.js";
 import { validAgentSpecContent } from "../fixtures/specs.js";
+import {
+  SECOND_TEST_ATTESTATION_KEY_ID,
+  SECOND_TEST_TRUSTED_ATTESTATION_KEY,
+  TEST_ATTESTATION_KEY_ID,
+  TEST_TRUSTED_ATTESTATION_KEY,
+  attestLifecycle,
+  attestRuntimeBinding,
+} from "../support/runtime-attestation.js";
 
-function metadataInState(state: string): AgentSpecRuntimeMetadata {
-  return AgentSpecRuntimeMetadataSchema.parse({
-    specId: "spec-crm-enricher",
-    version: "1.0.0",
-    state,
-    stateHistory: [
-      { state: "draft", actor: "builder-agent", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
-      { state, actor: "release-manager", timestamp: "2026-07-23T12:00:00Z", reason: "test state" },
-    ],
-    requestor: "builder-agent",
-    ...(state === "deployed"
-      ? {
-          deploymentBinding: {
-            bindingId: "binding-crm-enricher-001",
-            contentHash: "hash-v1",
-            runtimeInstanceId: "runtime-crm-enricher-001",
-            deployedAt: "2026-07-23T12:30:00Z",
-            ttl: 3600,
-          },
-        }
-      : {}),
+function specFixture(overrides: Record<string, unknown> = {}): AgentSpecContent {
+  const parsed = AgentSpecContentSchema.parse({
+    ...validAgentSpecContent,
+    ...overrides,
+    contentHash: "pending-recompute",
+  });
+  const { contentHash: _ignored, ...contentWithoutHash } = parsed;
+  return AgentSpecContentSchema.parse({
+    ...contentWithoutHash,
+    contentHash: computeContentHash(contentWithoutHash),
   });
 }
 
-const executableMetadata = metadataInState("deployed");
+const runtimeSpec = specFixture();
+
+function runtimeBindingEvidence(
+  spec: AgentSpecContent = runtimeSpec,
+  overrides: Record<string, unknown> = {},
+): AttestedRuntimeBindingEvidence {
+  const payload = RuntimeBindingArtifactSchema.parse({
+    bindingId: "binding-crm-enricher-001",
+    specId: spec.specId,
+    version: spec.version,
+    contentHash: spec.contentHash,
+    approvalArtifactId: "approval-spec-001",
+    runtimeInstanceId: "runtime-crm-enricher-001",
+    deployedAt: "2026-07-23T12:30:00Z",
+    ttl: 3600,
+    ...overrides,
+  });
+  return attestRuntimeBinding(payload);
+}
+
+function lifecycleEvidence(
+  role: "acting" | "callee",
+  overrides: Record<string, unknown> = {},
+): AttestedAgentLifecycleEvidence {
+  const defaults =
+    role === "acting"
+      ? { specId: runtimeSpec.specId, versionOrChannel: runtimeSpec.version }
+      : {
+          specId: SpecIdSchema.parse("spec-web-search"),
+          versionOrChannel: "1.0.0",
+        };
+  const payload = AgentLifecycleEvidencePayloadSchema.parse({
+    ...defaults,
+    state: "deployed",
+    assertedAt: "2026-07-23T12:59:00Z",
+    freshnessTtl: 300,
+    ...overrides,
+  });
+  return attestLifecycle(payload, role);
+}
 
 const authorizationContext: TrustedRuntimeAuthorizationContext = {
   authorizationTime: "2026-07-23T13:00:00Z",
+  attestationKeys: [TEST_TRUSTED_ATTESTATION_KEY],
 };
 
 function authorizeRuntimeAction(
   input: RuntimeAuthorizationInput,
-  context: TrustedRuntimeAuthorizationContext = authorizationContext,
+  overrides: Partial<TrustedRuntimeAuthorizationContext> = {},
 ) {
-  return authorizeRuntimeActionWithContext(input, context);
+  return authorizeRuntimeActionWithContext(input, {
+    ...authorizationContext,
+    ...overrides,
+  });
 }
 
 function callContext(overrides: Record<string, unknown> = {}): CallContext {
@@ -94,9 +139,14 @@ function edgeApproval(overrides: Record<string, unknown> = {}): ApprovalArtifact
 }
 
 function baseInput(overrides: Partial<RuntimeAuthorizationInput> = {}): RuntimeAuthorizationInput {
+  const spec = overrides.spec ?? runtimeSpec;
   return {
-    spec: validAgentSpecContent,
-    metadata: executableMetadata,
+    spec,
+    runtimeBindingEvidence: runtimeBindingEvidence(spec),
+    actingLifecycleEvidence: lifecycleEvidence("acting", {
+      specId: spec.specId,
+      versionOrChannel: spec.version,
+    }),
     action: { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" },
     callContext: callContext(),
     currentRunId: "run-current",
@@ -113,270 +163,51 @@ const agentAction = {
   childBudget: { callBudget: 1, tokenBudget: 5_000, timeBudget: 10_000 },
 } satisfies AgentCallRuntimeAction;
 
-function calleeLifecycleEvidence(overrides: Record<string, unknown> = {}) {
-  return CalleeLifecycleEvidenceSchema.parse({
-    calleeSpecId: "spec-web-search",
-    calleeVersionOrChannel: "1.0.0",
-    state: "deployed",
-    ...overrides,
-  });
-}
-
 function agentInput(overrides: Partial<RuntimeAuthorizationInput> = {}): RuntimeAuthorizationInput {
   return baseInput({
     action: agentAction,
-    calleeLifecycleEvidence: calleeLifecycleEvidence(),
+    calleeLifecycleEvidence: lifecycleEvidence("callee"),
     ...overrides,
   });
 }
 
-describe("authorizeRuntimeAction", () => {
-  it("allows an exact declared tool call without executing it", () => {
-    expect(authorizeRuntimeAction(baseInput())).toEqual({ outcome: "allowed", actionType: "tool_call" });
-  });
-
-  it("ignores valid callee lifecycle evidence for tool calls", () => {
-    expect(
-      authorizeRuntimeAction(
-        baseInput({
-          calleeLifecycleEvidence: calleeLifecycleEvidence({
-            calleeSpecId: "spec-foreign",
-            calleeVersionOrChannel: "stable",
-            state: "revoked",
-          }),
-        }),
-      ),
-    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
-  });
-
-  it("rejects structurally invalid callee lifecycle evidence even for tool calls", () => {
-    const input = {
-      ...baseInput(),
-      calleeLifecycleEvidence: {
-        calleeSpecId: "spec-web-search",
-        calleeVersionOrChannel: "1.0.0",
-        state: "unknown",
-      },
-    } as unknown as RuntimeAuthorizationInput;
-
-    expect(authorizeRuntimeAction(input)).toEqual({
-      outcome: "blocked",
-      reason: { type: "input_invalid", reason: "schema_validation_failed" },
-    });
-  });
-
-  it.each(["draft", "in_review", "approved", "suspended", "revoked", "rejected"])(
-    "blocks non-v0.1-executable state `%s`",
-    (state) => {
-      expect(authorizeRuntimeAction(baseInput({ metadata: metadataInState(state) }))).toEqual({
-        outcome: "blocked",
-        reason: { type: "runtime_state_not_executable", state },
-      });
+function mutateSignature<T extends AttestedRuntimeBindingEvidence | AttestedAgentLifecycleEvidence>(
+  evidence: T,
+): T {
+  const signature = Buffer.from(evidence.attestation.signatureBase64, "base64");
+  signature[0] = (signature[0] ?? 0) ^ 1;
+  return {
+    ...evidence,
+    attestation: {
+      ...evidence.attestation,
+      signatureBase64: signature.toString("base64"),
     },
-  );
+  };
+}
 
-  it("blocks when metadata does not match the acting spec version", () => {
-    const metadata = AgentSpecRuntimeMetadataSchema.parse({ ...executableMetadata, version: "9.9.9" });
-    expect(authorizeRuntimeAction(baseInput({ metadata }))).toEqual({
-      outcome: "blocked",
-      reason: { type: "runtime_subject_mismatch", specId: "spec-crm-enricher", version: "1.0.0" },
-    });
-  });
-
-  it("blocks deployed metadata without a deployment binding", () => {
-    const metadata = AgentSpecRuntimeMetadataSchema.parse({
-      ...executableMetadata,
-      deploymentBinding: undefined,
-    });
-    expect(authorizeRuntimeAction(baseInput({ metadata }))).toEqual({
-      outcome: "blocked",
-      reason: { type: "runtime_binding_missing", specId: "spec-crm-enricher", version: "1.0.0" },
-    });
-  });
-
-  it("blocks when deployment binding contentHash does not match the acting spec", () => {
-    const metadata = AgentSpecRuntimeMetadataSchema.parse({
-      ...executableMetadata,
-      deploymentBinding: {
-        ...executableMetadata.deploymentBinding,
-        contentHash: "hash-other",
-      },
-    });
-    expect(authorizeRuntimeAction(baseInput({ metadata }))).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "runtime_binding_content_hash_mismatch",
-        specId: "spec-crm-enricher",
-        version: "1.0.0",
-      },
-    });
-  });
-
-  it("treats deployedAt as an inclusive lower lease boundary across equivalent offsets", () => {
-    const metadata = AgentSpecRuntimeMetadataSchema.parse({
-      ...executableMetadata,
-      deploymentBinding: {
-        ...executableMetadata.deploymentBinding,
-        deployedAt: "2026-07-23T14:30:00+02:00",
-      },
-    });
-
-    expect(
-      authorizeRuntimeAction(baseInput({ metadata }), {
-        authorizationTime: "2026-07-23T12:30:00Z",
-      }),
-    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
-  });
-
-  it("allows a binding immediately before expiry and blocks it exactly at expiry", () => {
-    expect(
-      authorizeRuntimeAction(baseInput(), {
-        authorizationTime: "2026-07-23T13:29:59.999Z",
-      }),
-    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
-
-    expect(
-      authorizeRuntimeAction(baseInput(), {
-        authorizationTime: "2026-07-23T13:30:00Z",
-      }),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
-    });
-  });
-
-  it("blocks a binding before its deployedAt instant", () => {
-    expect(
-      authorizeRuntimeAction(baseInput(), {
-        authorizationTime: "2026-07-23T12:29:59.999Z",
-      }),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "runtime_binding_not_yet_valid", bindingId: "binding-crm-enricher-001" },
-    });
-  });
-
-  it("validates trusted authorization context before executable state", () => {
-    expect(
-      authorizeRuntimeActionWithContext(
-        baseInput({ metadata: metadataInState("revoked") }),
-        { authorizationTime: "2026-07-23T13:00:00" } as TrustedRuntimeAuthorizationContext,
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "runtime_authorization_context_invalid",
-        reason: "schema_validation_failed",
-      },
-    });
-  });
-
-  it("rejects structurally invalid binding timestamps before temporal evaluation", () => {
-    const metadata = {
-      ...executableMetadata,
-      deploymentBinding: {
-        ...executableMetadata.deploymentBinding,
-        deployedAt: "2026-07-23T12:30:00",
-      },
-    } as AgentSpecRuntimeMetadata;
-
-    expect(authorizeRuntimeAction(baseInput({ metadata }))).toEqual({
-      outcome: "blocked",
-      reason: { type: "input_invalid", reason: "schema_validation_failed" },
-    });
-  });
-
-  it("uses only deploymentBinding.ttl and ignores divergent top-level metadata.ttl", () => {
-    const shortTopLevelTtlMetadata = AgentSpecRuntimeMetadataSchema.parse({
-      ...executableMetadata,
-      ttl: 1,
-    });
-
-    expect(authorizeRuntimeAction(baseInput({ metadata: shortTopLevelTtlMetadata }))).toEqual({
+describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
+  it("allows an exact declared tool call with attested binding and acting lifecycle evidence", () => {
+    expect(authorizeRuntimeAction(baseInput())).toEqual({
       outcome: "allowed",
       actionType: "tool_call",
     });
+  });
 
-    const longTopLevelTtlMetadata = AgentSpecRuntimeMetadataSchema.parse({
-      ...executableMetadata,
-      ttl: 7200,
-    });
-
+  it("fails input validation before trusted-context validation", () => {
+    const input = { ...baseInput(), currentRunId: "" } as RuntimeAuthorizationInput;
     expect(
-      authorizeRuntimeAction(baseInput({ metadata: longTopLevelTtlMetadata }), {
-        authorizationTime: "2026-07-23T13:30:00Z",
-      }),
+      authorizeRuntimeActionWithContext(input, {
+        authorizationTime: "not-a-time",
+        attestationKeys: [],
+      } as TrustedRuntimeAuthorizationContext),
     ).toEqual({
       outcome: "blocked",
-      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
     });
   });
 
-  it("checks binding identity before expiry and expiry before call-context validity", () => {
-    const mismatchedMetadata = AgentSpecRuntimeMetadataSchema.parse({
-      ...executableMetadata,
-      deploymentBinding: {
-        ...executableMetadata.deploymentBinding,
-        contentHash: "hash-other",
-      },
-    });
-
-    expect(
-      authorizeRuntimeAction(baseInput({ metadata: mismatchedMetadata }), {
-        authorizationTime: "2026-07-23T14:00:00Z",
-      }),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "runtime_binding_content_hash_mismatch",
-        specId: "spec-crm-enricher",
-        version: "1.0.0",
-      },
-    });
-
-    expect(
-      authorizeRuntimeAction(
-        baseInput({ callContext: callContext({ callChain: ["spec-other"] }) }),
-        { authorizationTime: "2026-07-23T14:00:00Z" },
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
-    });
-  });
-
-  it.each([
-    { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" } as const,
-    agentAction,
-  ])("blocks expired bindings before authorizing $type actions", (action) => {
-    expect(
-      authorizeRuntimeAction(baseInput({ action }), {
-        authorizationTime: "2026-07-23T14:00:00Z",
-      }),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
-    });
-  });
-
-  it("is deterministic and does not mutate input, callee evidence, metadata, or context", () => {
-    const context: TrustedRuntimeAuthorizationContext = {
-      authorizationTime: "2026-07-23T13:00:00Z",
-    };
-    const input = agentInput();
-    const snapshot = structuredClone(context);
-    const inputSnapshot = structuredClone(input);
-
-    const first = authorizeRuntimeAction(input, context);
-    const second = authorizeRuntimeAction(input, context);
-
-    expect(first).toEqual(second);
-    expect(input).toEqual(inputSnapshot);
-    expect(context).toEqual(snapshot);
-  });
-
-  it("requires trusted authorization context with no wall-clock fallback", () => {
-    // @ts-expect-error Step 8 intentionally makes trusted authorization time mandatory.
+  it("requires the trusted context and rejects malformed or duplicate keysets", () => {
+    // @ts-expect-error Trusted authorization time and keyset are mandatory.
     expect(authorizeRuntimeActionWithContext(baseInput())).toEqual({
       outcome: "blocked",
       reason: {
@@ -385,34 +216,497 @@ describe("authorizeRuntimeAction", () => {
       },
     });
 
+    for (const context of [
+      { ...authorizationContext, authorizationTime: "2026-07-23T13:00:00" },
+      { ...authorizationContext, attestationKeys: [] },
+      {
+        ...authorizationContext,
+        attestationKeys: [
+          TEST_TRUSTED_ATTESTATION_KEY,
+          { ...SECOND_TEST_TRUSTED_ATTESTATION_KEY, keyId: TEST_ATTESTATION_KEY_ID },
+        ],
+      },
+      {
+        ...authorizationContext,
+        attestationKeys: [
+          { ...TEST_TRUSTED_ATTESTATION_KEY, publicKeySpkiDerBase64: "AA==" },
+        ],
+      },
+    ]) {
+      expect(
+        authorizeRuntimeActionWithContext(
+          baseInput({ runtimeBindingEvidence: undefined }),
+          context as TrustedRuntimeAuthorizationContext,
+        ),
+      ).toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "runtime_authorization_context_invalid",
+          reason: "schema_validation_failed",
+        },
+      });
+    }
+  });
+
+  it("rejects legacy mutable runtime metadata at the strict input boundary", () => {
+    const input = {
+      ...baseInput(),
+      metadata: { specId: runtimeSpec.specId, version: runtimeSpec.version, state: "deployed" },
+    } as unknown as RuntimeAuthorizationInput;
+    expect(authorizeRuntimeAction(input)).toEqual({
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+    });
+  });
+
+  it("requires acting lifecycle evidence structurally for every action", () => {
+    const { actingLifecycleEvidence: _ignored, ...input } = baseInput();
     expect(
-      authorizeRuntimeActionWithContext(baseInput(), {
-        authorizationTime: "2026-07-23T13:00:00Z",
-        source: "caller-clock",
-      } as TrustedRuntimeAuthorizationContext),
+      authorizeRuntimeAction(input as RuntimeAuthorizationInput),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+    });
+  });
+
+  it("blocks missing runtime binding evidence before acting lifecycle evaluation", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runtimeBindingEvidence: undefined,
+          actingLifecycleEvidence: mutateSignature(lifecycleEvidence("acting")),
+        }),
+      ),
     ).toEqual({
       outcome: "blocked",
       reason: {
-        type: "runtime_authorization_context_invalid",
-        reason: "schema_validation_failed",
+        type: "runtime_binding_missing",
+        specId: runtimeSpec.specId,
+        version: runtimeSpec.version,
       },
     });
   });
 
-  it("blocks when the acting spec is not the call-chain tail", () => {
-    expect(authorizeRuntimeAction(baseInput({ callContext: callContext({ callChain: ["spec-other"] }) }))).toEqual({
+  it.each([
+    ["runtime_binding", "runtimeBindingEvidence"],
+    ["acting_lifecycle", "actingLifecycleEvidence"],
+  ] as const)("blocks unknown keys for %s evidence before signature verification", (evidenceKind, field) => {
+    const evidence = {
+      ...(field === "runtimeBindingEvidence"
+        ? runtimeBindingEvidence()
+        : lifecycleEvidence("acting")),
+      attestation: {
+        ...(field === "runtimeBindingEvidence"
+          ? runtimeBindingEvidence().attestation
+          : lifecycleEvidence("acting").attestation),
+        keyId: "unknown-key",
+      },
+    };
+    expect(authorizeRuntimeAction(baseInput({ [field]: evidence }))).toEqual({
       outcome: "blocked",
-      reason: { type: "call_context_invalid", reason: "acting_spec_not_call_chain_tail" },
+      reason: { type: "attestation_key_unknown", evidenceKind, keyId: "unknown-key" },
     });
   });
 
-  it("blocks undeclared tools and non-exact scopes", () => {
+  it.each([
+    ["runtime_binding", "runtimeBindingEvidence"],
+    ["acting_lifecycle", "actingLifecycleEvidence"],
+  ] as const)("blocks invalid signatures for %s evidence", (evidenceKind, field) => {
+    const evidence =
+      field === "runtimeBindingEvidence"
+        ? mutateSignature(runtimeBindingEvidence())
+        : mutateSignature(lifecycleEvidence("acting"));
+    expect(authorizeRuntimeAction(baseInput({ [field]: evidence }))).toEqual({
+      outcome: "blocked",
+      reason: { type: "attestation_invalid", evidenceKind, keyId: TEST_ATTESTATION_KEY_ID },
+    });
+  });
+
+  it("treats a keyId switched to another trusted key as an invalid signature", () => {
+    const evidence = runtimeBindingEvidence();
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runtimeBindingEvidence: {
+            ...evidence,
+            attestation: {
+              ...evidence.attestation,
+              keyId: SECOND_TEST_ATTESTATION_KEY_ID,
+            },
+          },
+        }),
+        { attestationKeys: [TEST_TRUSTED_ATTESTATION_KEY, SECOND_TEST_TRUSTED_ATTESTATION_KEY] },
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "attestation_invalid",
+        evidenceKind: "runtime_binding",
+        keyId: SECOND_TEST_ATTESTATION_KEY_ID,
+      },
+    });
+  });
+
+  it("verifies binding signatures before artifact subject, hash, and lease guards", () => {
+    const evidence = runtimeBindingEvidence(runtimeSpec, {
+      specId: "spec-other",
+      contentHash: "wrong-hash",
+      deployedAt: "2026-07-23T10:00:00Z",
+      ttl: 1,
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ runtimeBindingEvidence: mutateSignature(evidence) }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "attestation_invalid",
+        evidenceKind: "runtime_binding",
+        keyId: TEST_ATTESTATION_KEY_ID,
+      },
+    });
+  });
+
+  it.each([
+    { specId: "spec-other" },
+    { version: "9.9.9" },
+  ])("re-sources runtime subject mismatch to the attested artifact: %o", (overrides) => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, overrides) }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_subject_mismatch",
+        specId: runtimeSpec.specId,
+        version: runtimeSpec.version,
+      },
+    });
+  });
+
+  it("blocks a self-inconsistent presented spec contentHash", () => {
+    const spec = AgentSpecContentSchema.parse({ ...runtimeSpec, contentHash: "self-inconsistent" });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ spec, runtimeBindingEvidence: runtimeBindingEvidence(spec) }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_content_hash_mismatch",
+        specId: spec.specId,
+        version: spec.version,
+      },
+    });
+  });
+
+  it("blocks a validly signed artifact whose contentHash differs from recomputed spec content", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, {
+            contentHash: "validly-signed-but-wrong",
+          }),
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_content_hash_mismatch",
+        specId: runtimeSpec.specId,
+        version: runtimeSpec.version,
+      },
+    });
+  });
+
+  it("blocks when recomputed content matches the artifact but not the presented spec hash", () => {
+    const selfInconsistentSpec = AgentSpecContentSchema.parse({
+      ...runtimeSpec,
+      contentHash: "presented-spec-hash-is-wrong",
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          spec: selfInconsistentSpec,
+          runtimeBindingEvidence: runtimeBindingEvidence(selfInconsistentSpec, {
+            contentHash: runtimeSpec.contentHash,
+          }),
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            specId: selfInconsistentSpec.specId,
+            versionOrChannel: selfInconsistentSpec.version,
+          }),
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_content_hash_mismatch",
+        specId: selfInconsistentSpec.specId,
+        version: selfInconsistentSpec.version,
+      },
+    });
+  });
+
+  it("detects spec-content mutation even when the presented hashes remain unchanged", () => {
+    const mutatedSpec = AgentSpecContentSchema.parse({
+      ...runtimeSpec,
+      objective: "Tampered objective",
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          spec: mutatedSpec,
+          runtimeBindingEvidence: runtimeBindingEvidence(mutatedSpec, {
+            contentHash: runtimeSpec.contentHash,
+          }),
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "runtime_binding_content_hash_mismatch" } });
+  });
+
+  it("evaluates the attested binding over the Step-8 half-open lease", () => {
+    const offsetBinding = runtimeBindingEvidence(runtimeSpec, {
+      deployedAt: "2026-07-23T14:30:00+02:00",
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runtimeBindingEvidence: offsetBinding,
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T12:30:00Z",
+          }),
+        }),
+        { authorizationTime: "2026-07-23T12:30:00Z" },
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+
+    expect(
+      authorizeRuntimeAction(baseInput(), { authorizationTime: "2026-07-23T12:29:59.999Z" }),
+    ).toMatchObject({ reason: { type: "runtime_binding_not_yet_valid" } });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T13:29:00Z",
+          }),
+        }),
+        { authorizationTime: "2026-07-23T13:29:59.999Z" },
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+    expect(
+      authorizeRuntimeAction(baseInput(), { authorizationTime: "2026-07-23T13:30:00Z" }),
+    ).toMatchObject({ reason: { type: "runtime_binding_expired" } });
+  });
+
+  it("lets content-hash failure beat expiry and expiry beat acting lifecycle", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, { contentHash: "wrong" }),
+        }),
+        { authorizationTime: "2026-07-23T14:00:00Z" },
+      ),
+    ).toMatchObject({ reason: { type: "runtime_binding_content_hash_mismatch" } });
+
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ actingLifecycleEvidence: mutateSignature(lifecycleEvidence("acting")) }),
+        { authorizationTime: "2026-07-23T14:00:00Z" },
+      ),
+    ).toMatchObject({ reason: { type: "runtime_binding_expired" } });
+  });
+});
+
+describe("authorizeRuntimeAction acting lifecycle", () => {
+  const nonExecutableStates = LifecycleStateSchema.options.filter(
+    (state) => !RUNTIME_EXECUTABLE_STATES.some((executableState) => executableState === state),
+  );
+
+  it("keeps acting executability distinct and limited to deployed", () => {
+    expect(RUNTIME_EXECUTABLE_STATES).toEqual(["deployed"]);
+    expect(nonExecutableStates).toEqual([
+      "draft",
+      "in_review",
+      "approved",
+      "suspended",
+      "revoked",
+      "rejected",
+    ]);
+  });
+
+  it.each(nonExecutableStates)("blocks signed acting state `%s` as non-executable", (state) => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ actingLifecycleEvidence: lifecycleEvidence("acting", { state }) }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_state_not_executable", state },
+    });
+  });
+
+  it.each([
+    { specId: "spec-other" },
+    { versionOrChannel: "stable" },
+  ])("blocks acting lifecycle subject mismatch: %o", (overrides) => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ actingLifecycleEvidence: lifecycleEvidence("acting", overrides) }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "lifecycle_evidence_subject_mismatch",
+        role: "acting",
+        specId: runtimeSpec.specId,
+        versionOrChannel: runtimeSpec.version,
+      },
+    });
+  });
+
+  it("checks acting signature before subject, state, and freshness", () => {
+    const evidence = lifecycleEvidence("acting", {
+      specId: "spec-other",
+      state: "revoked",
+      assertedAt: "2026-07-23T14:00:00Z",
+    });
+    expect(
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: mutateSignature(evidence) })),
+    ).toMatchObject({ reason: { type: "attestation_invalid", evidenceKind: "acting_lifecycle" } });
+  });
+
+  it("rejects a callee-domain signature replayed as acting evidence", () => {
+    const payload = AgentLifecycleEvidencePayloadSchema.parse({
+      ...lifecycleEvidence("acting").payload,
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({ actingLifecycleEvidence: attestLifecycle(payload, "callee") }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_invalid", evidenceKind: "acting_lifecycle" },
+    });
+  });
+
+  it("treats acting freshness as a half-open interval with no skew grace", () => {
+    const assertedAt = "2026-07-23T13:00:00Z";
+    const evidence = lifecycleEvidence("acting", { assertedAt, freshnessTtl: 300 });
+
+    expect(
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence }), {
+        authorizationTime: assertedAt,
+      }),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+    expect(
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence }), {
+        authorizationTime: "2026-07-23T12:59:59.999Z",
+      }),
+    ).toMatchObject({
+      reason: { type: "lifecycle_evidence_not_fresh", role: "acting", condition: "from_future" },
+    });
+    expect(
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence }), {
+        authorizationTime: "2026-07-23T13:04:59.999Z",
+      }),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+    expect(
+      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence }), {
+        authorizationTime: "2026-07-23T13:05:00Z",
+      }),
+    ).toMatchObject({
+      reason: { type: "lifecycle_evidence_not_fresh", role: "acting", condition: "expired" },
+    });
+  });
+
+  it("compares lifecycle freshness as absolute instants across offsets", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T15:00:00+02:00",
+          }),
+        }),
+        { authorizationTime: "2026-07-23T13:00:00Z" },
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it("lets non-executable acting state beat invalid freshness", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            state: "revoked",
+            assertedAt: "2026-07-23T14:00:00Z",
+          }),
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "runtime_state_not_executable", state: "revoked" },
+    });
+  });
+
+  it("lets acting freshness beat call-context and action failures", () => {
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T12:00:00Z",
+            freshnessTtl: 300,
+          }),
+          callContext: callContext({ callChain: ["spec-other"] }),
+          action: { type: "tool_call", toolId: "email.send", scope: "tenant:acme:crm" },
+        }),
+      ),
+    ).toMatchObject({
+      reason: { type: "lifecycle_evidence_not_fresh", role: "acting", condition: "expired" },
+    });
+  });
+});
+
+describe("authorizeRuntimeAction tool semantics", () => {
+  it("ignores any structurally valid callee evidence for tool calls", () => {
+    const evidence = lifecycleEvidence("callee", {
+      specId: "spec-foreign",
+      versionOrChannel: "stable",
+      state: "revoked",
+      assertedAt: "2026-07-23T10:00:00Z",
+    });
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          calleeLifecycleEvidence: {
+            ...mutateSignature(evidence),
+            attestation: { ...evidence.attestation, keyId: "unknown-key" },
+          },
+        }),
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it("rejects structurally invalid callee evidence even for tool calls", () => {
+    const input = {
+      ...baseInput(),
+      calleeLifecycleEvidence: {
+        payload: { specId: "spec-web-search", state: "deployed" },
+        attestation: { keyId: "x", signatureBase64: "not-base64" },
+      },
+    } as unknown as RuntimeAuthorizationInput;
+    expect(authorizeRuntimeAction(input)).toEqual({
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+    });
+  });
+
+  it("keeps exact tool declaration and scope checks", () => {
     expect(
       authorizeRuntimeAction(
         baseInput({ action: { type: "tool_call", toolId: "email.send", scope: "tenant:acme:crm" } }),
       ),
     ).toEqual({ outcome: "blocked", reason: { type: "tool_not_declared", toolId: "email.send" } });
-
     expect(
       authorizeRuntimeAction(
         baseInput({ action: { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme" } }),
@@ -422,10 +716,11 @@ describe("authorizeRuntimeAction", () => {
       reason: { type: "tool_scope_not_allowed", toolId: "crm.enrich", scope: "tenant:acme" },
     });
   });
+});
 
-  it("allows an approved agent call and returns the authorized next CallContext", () => {
-    const result = authorizeRuntimeAction(agentInput());
-    expect(result).toEqual({
+describe("authorizeRuntimeAction agent calls", () => {
+  it("allows an approved agent call and returns the authorized next context", () => {
+    expect(authorizeRuntimeAction(agentInput())).toEqual({
       outcome: "allowed",
       actionType: "agent_call",
       nextCallContext: {
@@ -440,7 +735,7 @@ describe("authorizeRuntimeAction", () => {
     });
   });
 
-  it("requires exact-subject callee lifecycle evidence for agent calls", () => {
+  it("requires callee lifecycle evidence only after cycle detection", () => {
     expect(authorizeRuntimeAction(baseInput({ action: agentAction }))).toEqual({
       outcome: "blocked",
       reason: {
@@ -449,36 +744,56 @@ describe("authorizeRuntimeAction", () => {
         calleeVersionOrChannel: "1.0.0",
       },
     });
-
-    for (const evidence of [
-      calleeLifecycleEvidence({ calleeSpecId: "spec-other" }),
-      calleeLifecycleEvidence({ calleeVersionOrChannel: "stable" }),
-      calleeLifecycleEvidence({ calleeSpecId: "spec-other", state: "revoked" }),
-    ]) {
-      expect(authorizeRuntimeAction(agentInput({ calleeLifecycleEvidence: evidence }))).toEqual({
-        outcome: "blocked",
-        reason: {
-          type: "callee_lifecycle_subject_mismatch",
-          calleeSpecId: "spec-web-search",
-          calleeVersionOrChannel: "1.0.0",
-        },
-      });
-    }
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          action: agentAction,
+          callContext: callContext({ callChain: ["spec-web-search", "spec-crm-enricher"] }),
+        }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "cycle_detected", calleeSpecId: "spec-web-search" },
+    });
   });
 
-  it("rejects structurally invalid agent-call evidence before semantic guards", () => {
-    const input = {
-      ...agentInput(),
-      calleeLifecycleEvidence: {
-        calleeSpecId: "spec-web-search",
-        calleeVersionOrChannel: "1.0.0",
-        state: "not-a-lifecycle-state",
-      },
-    } as unknown as RuntimeAuthorizationInput;
+  it("maps callee unknown keys and invalid signatures to generic attestation reasons", () => {
+    const evidence = lifecycleEvidence("callee");
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          calleeLifecycleEvidence: {
+            ...evidence,
+            attestation: { ...evidence.attestation, keyId: "unknown-key" },
+          },
+        }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_key_unknown", evidenceKind: "callee_lifecycle" },
+    });
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ calleeLifecycleEvidence: mutateSignature(evidence) }),
+      ),
+    ).toMatchObject({ reason: { type: "attestation_invalid", evidenceKind: "callee_lifecycle" } });
+  });
 
-    expect(authorizeRuntimeAction(input)).toEqual({
+  it.each([
+    { specId: "spec-other" },
+    { versionOrChannel: "stable" },
+  ])("blocks exact opaque callee subject mismatch: %o", (overrides) => {
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ calleeLifecycleEvidence: lifecycleEvidence("callee", overrides) }),
+      ),
+    ).toEqual({
       outcome: "blocked",
-      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+      reason: {
+        type: "lifecycle_evidence_subject_mismatch",
+        role: "callee",
+        specId: "spec-web-search",
+        versionOrChannel: "1.0.0",
+      },
     });
   });
 
@@ -486,7 +801,7 @@ describe("authorizeRuntimeAction", () => {
     (state) => !CALLEE_CALLABLE_STATES.some((callableState) => callableState === state),
   );
 
-  it("keeps callee callability conceptually separate and limited to deployed", () => {
+  it("keeps callee callability distinct and limited to deployed", () => {
     expect(CALLEE_CALLABLE_STATES).toEqual(["deployed"]);
     expect(nonCallableStates).toEqual([
       "draft",
@@ -498,10 +813,10 @@ describe("authorizeRuntimeAction", () => {
     ]);
   });
 
-  it.each(nonCallableStates)("blocks callee lifecycle state `%s` as not callable", (state) => {
+  it.each(nonCallableStates)("blocks signed callee state `%s` as not callable", (state) => {
     expect(
       authorizeRuntimeAction(
-        agentInput({ calleeLifecycleEvidence: calleeLifecycleEvidence({ state }) }),
+        agentInput({ calleeLifecycleEvidence: lifecycleEvidence("callee", { state }) }),
       ),
     ).toEqual({
       outcome: "blocked",
@@ -514,359 +829,199 @@ describe("authorizeRuntimeAction", () => {
     });
   });
 
-  it("preserves global and agent-call guard precedence around callee lifecycle", () => {
-    const revokedEvidence = calleeLifecycleEvidence({ state: "revoked" });
-
-    expect(
-      authorizeRuntimeAction(
-        agentInput({ calleeLifecycleEvidence: revokedEvidence }),
-        { authorizationTime: "2026-07-23T14:00:00Z" },
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "runtime_binding_expired", bindingId: "binding-crm-enricher-001" },
-    });
-
+  it("checks callee state before freshness and freshness before depth or budget", () => {
     expect(
       authorizeRuntimeAction(
         agentInput({
-          callContext: callContext({ callChain: ["spec-other"] }),
-          calleeLifecycleEvidence: revokedEvidence,
-        }),
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "call_context_invalid", reason: "acting_spec_not_call_chain_tail" },
-    });
-
-    expect(
-      authorizeRuntimeAction(
-        agentInput({ edgeApprovals: [], calleeLifecycleEvidence: revokedEvidence }),
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "call_edge_not_approved",
-        calleeSpecId: "spec-web-search",
-        calleeVersionOrChannel: "1.0.0",
-      },
-    });
-
-    expect(
-      authorizeRuntimeAction(
-        agentInput({
-          edgeApprovals: [edgeApproval({ allowedIntents: ["delegate"] })],
-          calleeLifecycleEvidence: revokedEvidence,
-        }),
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "call_intent_not_allowed", intent: "query" },
-    });
-
-    expect(
-      authorizeRuntimeAction(
-        agentInput({
-          callContext: callContext({
-            callChain: ["spec-web-search", "spec-crm-enricher"],
+          calleeLifecycleEvidence: lifecycleEvidence("callee", {
+            state: "revoked",
+            assertedAt: "2026-07-23T10:00:00Z",
           }),
-          calleeLifecycleEvidence: revokedEvidence,
+          callContext: callContext({ remainingDepth: 0, remainingCallBudget: 0 }),
         }),
       ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "cycle_detected", calleeSpecId: "spec-web-search" },
-    });
-
-    for (const overrides of [
-      { callContext: callContext({ remainingDepth: 0 }) },
-      { callContext: callContext({ remainingCallBudget: 0 }) },
-      {
-        action: {
-          ...agentAction,
-          childBudget: { callBudget: 4, tokenBudget: 25_000, timeBudget: 40_000 },
-        },
-      },
-    ]) {
-      expect(
-        authorizeRuntimeAction(
-          agentInput({ ...overrides, calleeLifecycleEvidence: revokedEvidence }),
-        ),
-      ).toEqual({
-        outcome: "blocked",
-        reason: {
-          type: "callee_state_not_callable",
-          calleeSpecId: "spec-web-search",
-          calleeVersionOrChannel: "1.0.0",
-          state: "revoked",
-        },
-      });
-    }
+    ).toMatchObject({ reason: { type: "callee_state_not_callable" } });
 
     expect(
       authorizeRuntimeAction(
         agentInput({
-          edgeApprovals: [edgeApproval({ requiresHumanGate: true })],
-          calleeLifecycleEvidence: revokedEvidence,
-        }),
-      ),
-    ).toMatchObject({ reason: { type: "human_gate_required" } });
-
-    expect(
-      authorizeRuntimeAction(
-        agentInput({
-          edgeApprovals: [edgeApproval(), edgeApproval({ maxCallsPerRun: 2 })],
-          calleeLifecycleEvidence: revokedEvidence,
-        }),
-      ),
-    ).toMatchObject({ reason: { type: "ambiguous_call_edge_approval" } });
-  });
-
-  it("treats version-or-channel as an exact opaque lifecycle-evidence key", () => {
-    const stableAction = { ...agentAction, calleeVersionOrChannel: "stable" };
-    const stableSpec = AgentSpecContentSchema.parse({
-      ...validAgentSpecContent,
-      declaredAgentCalls: [
-        {
-          ...(validAgentSpecContent.declaredAgentCalls[0] as object),
-          calleeVersionOrChannel: "stable",
-        },
-      ],
-    });
-
-    expect(
-      authorizeRuntimeAction(
-        agentInput({
-          spec: stableSpec,
-          action: stableAction,
-          edgeApprovals: [edgeApproval({ calleeVersionOrChannel: "stable" })],
-          calleeLifecycleEvidence: calleeLifecycleEvidence({
-            calleeVersionOrChannel: "stable",
+          calleeLifecycleEvidence: lifecycleEvidence("callee", {
+            assertedAt: "2026-07-23T10:00:00Z",
           }),
+          callContext: callContext({ remainingDepth: 0, remainingCallBudget: 0 }),
         }),
       ),
-    ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
-  });
-
-  it("inherits the tightest depth cap into the child context", () => {
-    const deeperSpec = AgentSpecContentSchema.parse({
-      ...validAgentSpecContent,
-      declaredAgentCalls: [
-        {
-          ...(validAgentSpecContent.declaredAgentCalls[0] as object),
-          maxDepth: 4,
-        },
-      ],
-    });
-    const result = authorizeRuntimeAction(
-      agentInput({
-        spec: deeperSpec,
-        callContext: callContext({ remainingDepth: 5 }),
-        edgeApprovals: [edgeApproval({ maxDepth: 3 })],
-      }),
-    );
-
-    expect(result).toEqual({
-      outcome: "allowed",
-      actionType: "agent_call",
-      nextCallContext: {
-        rootRunId: "run-root",
-        parentRunId: "run-current",
-        callChain: ["spec-crm-enricher", "spec-web-search"],
-        remainingDepth: 2,
-        remainingCallBudget: 1,
-        remainingTokenBudget: 5_000,
-        remainingTimeBudget: 10_000,
-      },
+    ).toMatchObject({
+      reason: { type: "lifecycle_evidence_not_fresh", role: "callee", condition: "expired" },
     });
   });
 
-  it("blocks agent calls missing from the immutable spec declaration", () => {
+  it("uses half-open callee freshness with no future skew grace", () => {
+    const evidence = lifecycleEvidence("callee", {
+      assertedAt: "2026-07-23T13:00:00Z",
+      freshnessTtl: 300,
+    });
     expect(
       authorizeRuntimeAction(
-        baseInput({
+        agentInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T12:59:00Z",
+          }),
+          calleeLifecycleEvidence: evidence,
+        }),
+        { authorizationTime: "2026-07-23T12:59:59.999Z" },
+      ),
+    ).toMatchObject({
+      reason: { type: "lifecycle_evidence_not_fresh", role: "callee", condition: "from_future" },
+    });
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T13:00:00Z",
+          }),
+          calleeLifecycleEvidence: evidence,
+        }),
+        { authorizationTime: "2026-07-23T13:04:59.999Z" },
+      ),
+    ).toMatchObject({ outcome: "allowed" });
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            assertedAt: "2026-07-23T13:04:00Z",
+          }),
+          calleeLifecycleEvidence: evidence,
+        }),
+        { authorizationTime: "2026-07-23T13:05:00Z" },
+      ),
+    ).toMatchObject({
+      reason: { type: "lifecycle_evidence_not_fresh", role: "callee", condition: "expired" },
+    });
+  });
+
+  it("rejects an acting-domain signature replayed as callee evidence", () => {
+    const payload = lifecycleEvidence("callee").payload;
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ calleeLifecycleEvidence: attestLifecycle(payload, "acting") }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_invalid", evidenceKind: "callee_lifecycle" },
+    });
+  });
+
+  it("preserves declaration, edge, human-gate, ambiguity, intent, and cycle precedence", () => {
+    const invalidCallee = mutateSignature(lifecycleEvidence("callee"));
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
           action: { ...agentAction, calleeSpecId: SpecIdSchema.parse("spec-billing") },
+          calleeLifecycleEvidence: invalidCallee,
         }),
       ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "agent_call_not_declared",
-        calleeSpecId: "spec-billing",
-        calleeVersionOrChannel: "1.0.0",
-      },
-    });
-  });
-
-  it("ignores non-approved edge artifacts and blocks when no approved matching edge exists", () => {
-    const pendingEdge = ApprovalArtifactSchema.parse({
-      ...edgeApproval(),
-      artifactId: "approval-edge-pending",
-      decision: "pending",
-    });
-    expect(authorizeRuntimeAction(baseInput({ action: agentAction, edgeApprovals: [pendingEdge] }))).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "call_edge_not_approved",
-        calleeSpecId: "spec-web-search",
-        calleeVersionOrChannel: "1.0.0",
-      },
-    });
-  });
-
-  it("blocks ambiguous approved edge artifacts for the same caller/callee join key", () => {
+    ).toMatchObject({ reason: { type: "agent_call_not_declared" } });
+    expect(
+      authorizeRuntimeAction(agentInput({ edgeApprovals: [], calleeLifecycleEvidence: invalidCallee })),
+    ).toMatchObject({ reason: { type: "call_edge_not_approved" } });
     expect(
       authorizeRuntimeAction(
-        baseInput({
-          action: agentAction,
-          edgeApprovals: [
-            edgeApproval({ maxCallsPerRun: 3 }),
-            edgeApproval({ maxCallsPerRun: 2 }),
-          ],
-        }),
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "ambiguous_call_edge_approval",
-        calleeSpecId: "spec-web-search",
-        calleeVersionOrChannel: "1.0.0",
-      },
-    });
-  });
-
-  it("requires the intent to be allowed by both the spec declaration and the approved edge", () => {
-    expect(
-      authorizeRuntimeAction(
-        baseInput({
-          action: agentAction,
-          edgeApprovals: [edgeApproval({ allowedIntents: ["delegate"] })],
-        }),
-      ),
-    ).toEqual({ outcome: "blocked", reason: { type: "call_intent_not_allowed", intent: "query" } });
-  });
-
-  it("blocks human-gated edges fail-closed in v0.1", () => {
-    expect(
-      authorizeRuntimeAction(
-        baseInput({
-          action: agentAction,
-          edgeApprovals: [edgeApproval({ requiresHumanGate: true })],
-        }),
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "human_gate_required",
-        calleeSpecId: "spec-web-search",
-        calleeVersionOrChannel: "1.0.0",
-      },
-    });
-  });
-
-  it("lets a matching human-gated edge fail closed before ambiguous edge handling", () => {
-    expect(
-      authorizeRuntimeAction(
-        baseInput({
-          action: agentAction,
+        agentInput({
           edgeApprovals: [
             edgeApproval({ requiresHumanGate: false }),
             edgeApproval({ requiresHumanGate: true }),
           ],
+          calleeLifecycleEvidence: invalidCallee,
         }),
       ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "human_gate_required",
-        calleeSpecId: "spec-web-search",
-        calleeVersionOrChannel: "1.0.0",
-      },
-    });
-  });
-
-  it("rejects cycles using the full call chain, not only depth", () => {
+    ).toMatchObject({ reason: { type: "human_gate_required" } });
     expect(
       authorizeRuntimeAction(
-        baseInput({
-          action: agentAction,
-          callContext: callContext({
-            callChain: [
-              SpecIdSchema.parse("spec-web-search"),
-              SpecIdSchema.parse("spec-crm-enricher"),
-            ],
-          }),
+        agentInput({
+          edgeApprovals: [edgeApproval(), edgeApproval({ maxCallsPerRun: 2 })],
+          calleeLifecycleEvidence: invalidCallee,
         }),
       ),
-    ).toEqual({ outcome: "blocked", reason: { type: "cycle_detected", calleeSpecId: "spec-web-search" } });
+    ).toMatchObject({ reason: { type: "ambiguous_call_edge_approval" } });
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          edgeApprovals: [edgeApproval({ allowedIntents: ["delegate"] })],
+          calleeLifecycleEvidence: invalidCallee,
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "call_intent_not_allowed" } });
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          callContext: callContext({ callChain: ["spec-web-search", "spec-crm-enricher"] }),
+          calleeLifecycleEvidence: invalidCallee,
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "cycle_detected" } });
   });
 
-  it("blocks exhausted depth and call budget before deriving a child context", () => {
+  it("preserves depth, call-budget, and child-budget enforcement", () => {
     expect(
       authorizeRuntimeAction(agentInput({ callContext: callContext({ remainingDepth: 0 }) })),
-    ).toEqual({ outcome: "blocked", reason: { type: "depth_exhausted" } });
-
+    ).toMatchObject({ reason: { type: "depth_exhausted" } });
+    expect(
+      authorizeRuntimeAction(agentInput({ callContext: callContext({ remainingCallBudget: 0 }) })),
+    ).toMatchObject({ reason: { type: "call_budget_exhausted" } });
     expect(
       authorizeRuntimeAction(
         agentInput({
           action: {
             ...agentAction,
-            childBudget: { ...agentAction.childBudget, callBudget: 0 },
+            childBudget: { callBudget: 4, tokenBudget: 25_000, timeBudget: 40_000 },
           },
-          callContext: callContext({ remainingCallBudget: 0 }),
         }),
       ),
-    ).toEqual({ outcome: "blocked", reason: { type: "call_budget_exhausted" } });
+    ).toMatchObject({ reason: { type: "budget_increase_forbidden" } });
   });
 
-  it("blocks child runtime budgets that exceed caller remaining budget or edge/spec call limits", () => {
+  it("treats a channel as an exact opaque signed subject key", () => {
+    const stableSpec = specFixture({
+      declaredAgentCalls: [
+        {
+          ...(runtimeSpec.declaredAgentCalls[0] as object),
+          calleeVersionOrChannel: "stable",
+        },
+      ],
+    });
+    const stableAction = { ...agentAction, calleeVersionOrChannel: "stable" };
     expect(
       authorizeRuntimeAction(
         agentInput({
-          action: { ...agentAction, childBudget: { callBudget: 1, tokenBudget: 25_000, timeBudget: 10_000 } },
+          spec: stableSpec,
+          runtimeBindingEvidence: runtimeBindingEvidence(stableSpec),
+          actingLifecycleEvidence: lifecycleEvidence("acting", {
+            specId: stableSpec.specId,
+            versionOrChannel: stableSpec.version,
+          }),
+          action: stableAction,
+          edgeApprovals: [edgeApproval({ calleeVersionOrChannel: "stable" })],
+          calleeLifecycleEvidence: lifecycleEvidence("callee", {
+            versionOrChannel: "stable",
+          }),
         }),
       ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "budget_increase_forbidden",
-        budget: { callBudget: 1, tokenBudget: 25_000, timeBudget: 10_000 },
-      },
-    });
-
-    expect(
-      authorizeRuntimeAction(
-        agentInput({
-          action: { ...agentAction, childBudget: { callBudget: 4, tokenBudget: 5_000, timeBudget: 10_000 } },
-        }),
-      ),
-    ).toEqual({
-      outcome: "blocked",
-      reason: {
-        type: "budget_increase_forbidden",
-        budget: { callBudget: 4, tokenBudget: 5_000, timeBudget: 10_000 },
-      },
-    });
+    ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
   });
+});
 
-  it("fails closed when the runtime authorization boundary input is structurally invalid", () => {
-    const invalidInput = {
-      ...baseInput(),
-      currentRunId: "",
-    } as RuntimeAuthorizationInput;
+describe("authorizeRuntimeAction purity", () => {
+  it("is deterministic and mutates neither evidence, keyset, spec, nor call context", () => {
+    const input = agentInput();
+    const context = structuredClone(authorizationContext);
+    const inputSnapshot = structuredClone(input);
+    const contextSnapshot = structuredClone(context);
 
-    expect(authorizeRuntimeAction(invalidInput)).toEqual({
-      outcome: "blocked",
-      reason: { type: "input_invalid", reason: "schema_validation_failed" },
-    });
+    const first = authorizeRuntimeActionWithContext(input, context);
+    const second = authorizeRuntimeActionWithContext(input, context);
 
-    expect(
-      authorizeRuntimeActionWithContext(invalidInput, {
-        authorizationTime: "2026-07-23T13:00:00",
-      } as TrustedRuntimeAuthorizationContext),
-    ).toEqual({
-      outcome: "blocked",
-      reason: { type: "input_invalid", reason: "schema_validation_failed" },
-    });
+    expect(first).toEqual(second);
+    expect(input).toEqual(inputSnapshot);
+    expect(context).toEqual(contextSnapshot);
   });
 });

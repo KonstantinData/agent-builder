@@ -1,11 +1,24 @@
+import { computeContentHash } from "../assembler/content-hash.js";
 import { detectCycleInChain } from "../invariants/cycle-detection.js";
-import type { DeploymentBinding } from "../schema/agent-spec-runtime-metadata.js";
+import type { AgentSpecContent } from "../schema/agent-spec-content.js";
 import type { CallContext } from "../schema/call-context.js";
 import type { AgentCallPolicyEdge } from "../schema/agent-call-policy-edge.js";
 import type { ApprovalArtifact } from "../schema/approval-artifact.js";
+import type { RuntimeBindingArtifact } from "../schema/runtime-binding.js";
+import type {
+  AgentLifecycleEvidencePayload,
+  AttestationEnvelope,
+  AttestationEvidenceKind,
+  AttestedAgentLifecycleEvidence,
+  LifecycleEvidenceRole,
+} from "../schema/runtime-attestation.js";
+import {
+  ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
+  CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
+  RUNTIME_BINDING_ATTESTATION_DOMAIN,
+} from "../schema/runtime-attestation.js";
 import type {
   AgentCallRuntimeAction,
-  CalleeLifecycleEvidence,
   RuntimeAuthorizationInput,
   RuntimeAuthorizationResult,
   TrustedRuntimeAuthorizationContext,
@@ -19,6 +32,10 @@ import {
   isRuntimeBudgetMonotonic,
   remainingRuntimeBudgetFromContext,
 } from "./runtime-budget.js";
+import {
+  type RuntimeAttestationDomain,
+  verifyEd25519Attestation,
+} from "./runtime-attestation.js";
 
 export const RUNTIME_EXECUTABLE_STATES = ["deployed"] as const;
 
@@ -44,8 +61,41 @@ function isCallableState(state: string): boolean {
   return CALLEE_CALLABLE_STATES.some((callableState) => callableState === state);
 }
 
+function validateAttestation(
+  evidenceKind: AttestationEvidenceKind,
+  domain: RuntimeAttestationDomain,
+  payload: unknown,
+  envelope: AttestationEnvelope,
+  context: TrustedRuntimeAuthorizationContext,
+): RuntimeAuthorizationResult | undefined {
+  const trustedKey = context.attestationKeys.find((key) => key.keyId === envelope.keyId);
+  if (trustedKey === undefined) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "attestation_key_unknown",
+        evidenceKind,
+        keyId: envelope.keyId,
+      },
+    };
+  }
+
+  if (!verifyEd25519Attestation(domain, payload, envelope, trustedKey)) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "attestation_invalid",
+        evidenceKind,
+        keyId: envelope.keyId,
+      },
+    };
+  }
+
+  return undefined;
+}
+
 function validateRuntimeBindingValidity(
-  binding: DeploymentBinding,
+  binding: RuntimeBindingArtifact,
   context: TrustedRuntimeAuthorizationContext,
 ): RuntimeAuthorizationResult | undefined {
   // Both values passed strict RFC 3339 schemas. Compare parsed instants rather
@@ -71,29 +121,54 @@ function validateRuntimeBindingValidity(
   return undefined;
 }
 
-function validateRuntimeSubject(
-  input: RuntimeAuthorizationInput,
+function validateLifecycleFreshness(
+  payload: AgentLifecycleEvidencePayload,
+  role: LifecycleEvidenceRole,
   context: TrustedRuntimeAuthorizationContext,
 ): RuntimeAuthorizationResult | undefined {
-  if (!isExecutableState(input.metadata.state)) {
-    return {
-      outcome: "blocked",
-      reason: { type: "runtime_state_not_executable", state: input.metadata.state },
-    };
-  }
+  const assertedAtEpochMs = Date.parse(payload.assertedAt);
+  const authorizationTimeEpochMs = Date.parse(context.authorizationTime);
 
-  if (input.metadata.specId !== input.spec.specId || input.metadata.version !== input.spec.version) {
+  if (authorizationTimeEpochMs < assertedAtEpochMs) {
     return {
       outcome: "blocked",
       reason: {
-        type: "runtime_subject_mismatch",
-        specId: input.spec.specId,
-        version: input.spec.version,
+        type: "lifecycle_evidence_not_fresh",
+        role,
+        condition: "from_future",
+        specId: payload.specId,
+        versionOrChannel: payload.versionOrChannel,
       },
     };
   }
 
-  if (input.metadata.deploymentBinding === undefined) {
+  const expiresAtEpochMs = assertedAtEpochMs + payload.freshnessTtl * 1_000;
+  if (authorizationTimeEpochMs >= expiresAtEpochMs) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "lifecycle_evidence_not_fresh",
+        role,
+        condition: "expired",
+        specId: payload.specId,
+        versionOrChannel: payload.versionOrChannel,
+      },
+    };
+  }
+
+  return undefined;
+}
+
+function recomputeSpecContentHash(spec: AgentSpecContent): string {
+  const { contentHash: _ignored, ...contentWithoutHash } = spec;
+  return computeContentHash(contentWithoutHash);
+}
+
+function validateRuntimeEvidence(
+  input: RuntimeAuthorizationInput,
+  context: TrustedRuntimeAuthorizationContext,
+): RuntimeAuthorizationResult | undefined {
+  if (input.runtimeBindingEvidence === undefined) {
     return {
       outcome: "blocked",
       reason: {
@@ -104,7 +179,37 @@ function validateRuntimeSubject(
     };
   }
 
-  if (input.metadata.deploymentBinding.contentHash !== input.spec.contentHash) {
+  const bindingEvidence = input.runtimeBindingEvidence;
+  const bindingAttestationBlock = validateAttestation(
+    "runtime_binding",
+    RUNTIME_BINDING_ATTESTATION_DOMAIN,
+    bindingEvidence.payload,
+    bindingEvidence.attestation,
+    context,
+  );
+  if (bindingAttestationBlock) {
+    return bindingAttestationBlock;
+  }
+
+  if (
+    bindingEvidence.payload.specId !== input.spec.specId ||
+    bindingEvidence.payload.version !== input.spec.version
+  ) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "runtime_subject_mismatch",
+        specId: input.spec.specId,
+        version: input.spec.version,
+      },
+    };
+  }
+
+  const recomputedContentHash = recomputeSpecContentHash(input.spec);
+  if (
+    recomputedContentHash !== input.spec.contentHash ||
+    recomputedContentHash !== bindingEvidence.payload.contentHash
+  ) {
     return {
       outcome: "blocked",
       reason: {
@@ -115,7 +220,52 @@ function validateRuntimeSubject(
     };
   }
 
-  return validateRuntimeBindingValidity(input.metadata.deploymentBinding, context);
+  const bindingValidityBlock = validateRuntimeBindingValidity(
+    bindingEvidence.payload,
+    context,
+  );
+  if (bindingValidityBlock) {
+    return bindingValidityBlock;
+  }
+
+  const actingEvidence = input.actingLifecycleEvidence;
+  const actingAttestationBlock = validateAttestation(
+    "acting_lifecycle",
+    ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
+    actingEvidence.payload,
+    actingEvidence.attestation,
+    context,
+  );
+  if (actingAttestationBlock) {
+    return actingAttestationBlock;
+  }
+
+  if (
+    actingEvidence.payload.specId !== input.spec.specId ||
+    actingEvidence.payload.versionOrChannel !== input.spec.version
+  ) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "lifecycle_evidence_subject_mismatch",
+        role: "acting",
+        specId: input.spec.specId,
+        versionOrChannel: input.spec.version,
+      },
+    };
+  }
+
+  if (!isExecutableState(actingEvidence.payload.state)) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "runtime_state_not_executable",
+        state: actingEvidence.payload.state,
+      },
+    };
+  }
+
+  return validateLifecycleFreshness(actingEvidence.payload, "acting", context);
 }
 
 function validateCallContext(input: RuntimeAuthorizationInput): CallContext | RuntimeAuthorizationResult {
@@ -191,8 +341,9 @@ function deriveNextCallContext(
 }
 
 function validateCalleeLifecycleEvidence(
-  evidence: CalleeLifecycleEvidence | undefined,
+  evidence: AttestedAgentLifecycleEvidence | undefined,
   action: AgentCallRuntimeAction,
+  context: TrustedRuntimeAuthorizationContext,
 ): RuntimeAuthorizationResult | undefined {
   if (evidence === undefined) {
     return {
@@ -205,39 +356,52 @@ function validateCalleeLifecycleEvidence(
     };
   }
 
+  const attestationBlock = validateAttestation(
+    "callee_lifecycle",
+    CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
+    evidence.payload,
+    evidence.attestation,
+    context,
+  );
+  if (attestationBlock) {
+    return attestationBlock;
+  }
+
   if (
-    evidence.calleeSpecId !== action.calleeSpecId ||
-    evidence.calleeVersionOrChannel !== action.calleeVersionOrChannel
+    evidence.payload.specId !== action.calleeSpecId ||
+    evidence.payload.versionOrChannel !== action.calleeVersionOrChannel
   ) {
     return {
       outcome: "blocked",
       reason: {
-        type: "callee_lifecycle_subject_mismatch",
-        calleeSpecId: action.calleeSpecId,
-        calleeVersionOrChannel: action.calleeVersionOrChannel,
+        type: "lifecycle_evidence_subject_mismatch",
+        role: "callee",
+        specId: action.calleeSpecId,
+        versionOrChannel: action.calleeVersionOrChannel,
       },
     };
   }
 
-  if (!isCallableState(evidence.state)) {
+  if (!isCallableState(evidence.payload.state)) {
     return {
       outcome: "blocked",
       reason: {
         type: "callee_state_not_callable",
         calleeSpecId: action.calleeSpecId,
         calleeVersionOrChannel: action.calleeVersionOrChannel,
-        state: evidence.state,
+        state: evidence.payload.state,
       },
     };
   }
 
-  return undefined;
+  return validateLifecycleFreshness(evidence.payload, "callee", context);
 }
 
 function authorizeAgentCall(
   input: RuntimeAuthorizationInput,
   action: AgentCallRuntimeAction,
   callContext: CallContext,
+  context: TrustedRuntimeAuthorizationContext,
 ): RuntimeAuthorizationResult {
   const declaredCall = input.spec.declaredAgentCalls.find(
     (call) =>
@@ -302,6 +466,7 @@ function authorizeAgentCall(
   const calleeLifecycleBlock = validateCalleeLifecycleEvidence(
     input.calleeLifecycleEvidence,
     action,
+    context,
   );
   if (calleeLifecycleBlock) {
     return calleeLifecycleBlock;
@@ -350,21 +515,21 @@ function authorizeAgentCall(
  * memory, registry, DB, deployment state, or human-gate decisions.
  *
  * Known v0.1 boundaries:
- * - Runtime metadata is executable only in `deployed` state with a deployment
- *   binding whose contentHash matches the supplied immutable spec content.
- * - Temporal validity is evaluated over supplied control-plane-asserted binding
- *   evidence. This slice validates structure, subject binding, content hash,
- *   and temporal consistency, but does not authenticate the evidence's origin
- *   or integrity. A future attestation must cover the complete binding artifact.
+ * - Runtime authorization consumes a signed full RuntimeBindingArtifact and
+ *   recomputes the presented spec content hash. Mutable runtime metadata is not
+ *   an authorization input or authority source.
+ * - Acting and callee lifecycle claims are Ed25519-attested and bounded by a
+ *   maximum 300-second freshness lease. Freshness limits replay but does not
+ *   prove synchronous current state after the assertion instant.
  * - Parent context spend-down is caller-owned in v0.1. This function returns
  *   the authorized child context; it does not mutate or return the parent
- *   context for later sibling calls.
- * - Agent calls require exact-subject lifecycle evidence whose presented state
- *   is callable. The evidence is caller-supplied and not attested or fresh, so
- *   this validates structural consistency rather than current lifecycle truth.
- *   Process liveness and channel resolution remain out of scope.
- * - `currentRunId` is structurally validated but not attested against a runtime
- *   store; run identity attestation belongs to a later runtime binding slice.
+ *   context for later sibling calls. Call context, run identity, cycle chain,
+ *   and remaining budgets are not attested until a later slice.
+ * - Call-graph approval artifacts remain structurally validated but unsigned;
+ *   approval provenance attestation belongs to the next control-plane slice.
+ * - External signing, private-key custody, KMS/HSM, key revocation, nonce replay
+ *   storage, synchronous lifecycle lookup, process liveness, channel resolution,
+ *   and real execution remain out of scope.
  */
 export function authorizeRuntimeAction(
   input: RuntimeAuthorizationInput,
@@ -391,9 +556,9 @@ export function authorizeRuntimeAction(
   }
   const validatedContext = parsedContext.data;
 
-  const subjectBlock = validateRuntimeSubject(validatedInput, validatedContext);
-  if (subjectBlock) {
-    return subjectBlock;
+  const runtimeEvidenceBlock = validateRuntimeEvidence(validatedInput, validatedContext);
+  if (runtimeEvidenceBlock) {
+    return runtimeEvidenceBlock;
   }
 
   const callContext = validateCallContext(validatedInput);
@@ -405,6 +570,11 @@ export function authorizeRuntimeAction(
     case "tool_call":
       return authorizeToolCall(validatedInput, validatedInput.action);
     case "agent_call":
-      return authorizeAgentCall(validatedInput, validatedInput.action, callContext);
+      return authorizeAgentCall(
+        validatedInput,
+        validatedInput.action,
+        callContext,
+        validatedContext,
+      );
   }
 }
