@@ -113,6 +113,20 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "call_budget_exhausted" }
   | { readonly type: "budget_increase_forbidden"; readonly budget: RuntimeBudget };
 
+/**
+ * Compile-time guard that the closed block-reason catalog and the structured
+ * reason union stay in exact sync. Adding a code in one place without the other
+ * breaks typecheck instead of letting runtime audit codes drift silently.
+ */
+type _blockReasonsInSync =
+  [RuntimeAuthorizationBlockReason["type"]] extends [RuntimeAuthorizationBlockReasonCode]
+    ? [RuntimeAuthorizationBlockReasonCode] extends [RuntimeAuthorizationBlockReason["type"]]
+      ? true
+      : never
+    : never;
+const _assertBlockReasonsInSync: _blockReasonsInSync = true;
+void _assertBlockReasonsInSync;
+
 export type RuntimeAuthorizationResult =
   | { readonly outcome: "allowed"; readonly actionType: "tool_call" }
   | {
