@@ -1,5 +1,4 @@
 import { createPrivateKey, sign } from "node:crypto";
-import type { DecidedCallGraphEdgeApproval } from "../../src/schema/approval-artifact.js";
 import type {
   AgentLifecycleEvidencePayload,
   AttestationEnvelope,
@@ -7,6 +6,7 @@ import type {
   AttestedCallGraphEdgeApproval,
   AttestedRunContextEvidence,
   AttestedRuntimeBindingEvidence,
+  CallGraphEdgeApprovalEvidencePayload,
   RunContextEvidencePayload,
   TrustedAttestationKey,
 } from "../../src/schema/runtime-attestation.js";
@@ -87,7 +87,7 @@ export function attestLifecycle(
 }
 
 export function attestCallGraphEdgeApproval(
-  payload: DecidedCallGraphEdgeApproval,
+  payload: CallGraphEdgeApprovalEvidencePayload,
 ): AttestedCallGraphEdgeApproval {
   return {
     payload,

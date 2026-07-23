@@ -17,6 +17,8 @@ import {
   type AttestedCallGraphEdgeApproval,
   type AttestedRunContextEvidence,
   type AttestedRuntimeBindingEvidence,
+  type CallGraphEdgeApprovalFreshnessCondition,
+  type CallGraphEdgeApprovalInvalidCondition,
   type LifecycleEvidenceRole,
   type LifecycleFreshnessCondition,
   type RunContextFreshnessCondition,
@@ -126,6 +128,8 @@ export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
   "tool_scope_not_allowed",
   "agent_call_not_declared",
   "call_edge_not_approved",
+  "call_graph_edge_approval_invalid",
+  "call_graph_edge_approval_not_fresh",
   "ambiguous_call_edge_approval",
   "call_intent_not_allowed",
   "human_gate_required",
@@ -175,6 +179,8 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "tool_scope_not_allowed"; readonly toolId: string; readonly scope: string }
   | { readonly type: "agent_call_not_declared"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
   | { readonly type: "call_edge_not_approved"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
+  | { readonly type: "call_graph_edge_approval_invalid"; readonly condition: CallGraphEdgeApprovalInvalidCondition; readonly artifactId: string }
+  | { readonly type: "call_graph_edge_approval_not_fresh"; readonly condition: CallGraphEdgeApprovalFreshnessCondition; readonly artifactId: string }
   | { readonly type: "ambiguous_call_edge_approval"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
   | { readonly type: "call_intent_not_allowed"; readonly intent: string }
   | { readonly type: "human_gate_required"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }

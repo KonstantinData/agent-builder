@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DecidedCallGraphEdgeApprovalSchema } from "../../src/schema/approval-artifact.js";
 import {
   AgentLifecycleEvidencePayloadSchema,
+  CallGraphEdgeApprovalEvidencePayloadSchema,
   RunContextEvidencePayloadSchema,
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
 } from "../../src/schema/runtime-attestation.js";
@@ -90,7 +91,12 @@ const edgeApprovalPayload = DecidedCallGraphEdgeApprovalSchema.parse({
     trustDomainId: "domain-sales",
   },
 });
-const edgeApprovalEvidence = attestCallGraphEdgeApproval(edgeApprovalPayload);
+const edgeApprovalEvidencePayload = CallGraphEdgeApprovalEvidencePayloadSchema.parse({
+  approval: edgeApprovalPayload,
+  assertedAt: "2026-07-23T12:59:00Z",
+  freshnessTtl: 300,
+});
+const edgeApprovalEvidence = attestCallGraphEdgeApproval(edgeApprovalEvidencePayload);
 
 const candidate = {
   spec: validAgentSpecContent,
@@ -180,6 +186,17 @@ describe("Runtime authorization schemas", () => {
     expect(
       RuntimeAuthorizationInputSchema.safeParse({
         ...candidate,
+        attestedEdgeApprovals: [
+          {
+            payload: edgeApprovalPayload,
+            attestation: edgeApprovalEvidence.attestation,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      RuntimeAuthorizationInputSchema.safeParse({
+        ...candidate,
         edgeApprovals: [edgeApprovalPayload],
       }).success,
     ).toBe(false);
@@ -189,7 +206,10 @@ describe("Runtime authorization schemas", () => {
         attestedEdgeApprovals: [
           {
             ...edgeApprovalEvidence,
-            payload: { ...edgeApprovalPayload, decision: "pending" },
+            payload: {
+              ...edgeApprovalEvidencePayload,
+              approval: { ...edgeApprovalPayload, decision: "pending" },
+            },
           },
         ],
       }).success,

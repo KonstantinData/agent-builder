@@ -10,6 +10,7 @@ import type {
   AttestationEvidenceKind,
   AttestedAgentLifecycleEvidence,
   AttestedCallGraphEdgeApproval,
+  CallGraphEdgeApprovalEvidencePayload,
   LifecycleEvidenceRole,
   RunContextEvidencePayload,
 } from "../schema/runtime-attestation.js";
@@ -377,7 +378,7 @@ function selectRelevantEdgeApprovals(
 ): AttestedCallGraphEdgeApproval[] {
   const matches: AttestedCallGraphEdgeApproval[] = [];
   for (const approvalEvidence of input.attestedEdgeApprovals) {
-    const edge = approvalEvidence.payload.edge;
+    const edge = approvalEvidence.payload.approval.edge;
     const matchesEdge =
       edge.callerSpecId === input.spec.specId &&
       edge.callerVersion === input.spec.version &&
@@ -389,6 +390,51 @@ function selectRelevantEdgeApprovals(
     }
   }
   return matches;
+}
+
+function validateCallGraphEdgeApprovalAuthority(
+  payload: CallGraphEdgeApprovalEvidencePayload,
+  context: TrustedRuntimeAuthorizationContext,
+): RuntimeAuthorizationResult | undefined {
+  const decidedAtEpochMs = Date.parse(payload.approval.decidedAt);
+  const assertedAtEpochMs = Date.parse(payload.assertedAt);
+
+  if (decidedAtEpochMs > assertedAtEpochMs) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_invalid",
+        condition: "decision_after_assertion",
+        artifactId: payload.approval.artifactId,
+      },
+    };
+  }
+
+  const authorizationTimeEpochMs = Date.parse(context.authorizationTime);
+  if (authorizationTimeEpochMs < assertedAtEpochMs) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_not_fresh",
+        condition: "from_future",
+        artifactId: payload.approval.artifactId,
+      },
+    };
+  }
+
+  const freshUntilEpochMs = assertedAtEpochMs + payload.freshnessTtl * 1_000;
+  if (authorizationTimeEpochMs >= freshUntilEpochMs) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_not_fresh",
+        condition: "expired",
+        artifactId: payload.approval.artifactId,
+      },
+    };
+  }
+
+  return undefined;
 }
 
 function deriveNextCallContext(
@@ -499,11 +545,19 @@ function authorizeAgentCall(
     if (attestationBlock) {
       return attestationBlock;
     }
+
+    const authorityBlock = validateCallGraphEdgeApprovalAuthority(
+      approvalEvidence.payload,
+      context,
+    );
+    if (authorityBlock) {
+      return authorityBlock;
+    }
   }
 
   const approvedEdges = relevantApprovalEvidence
-    .filter((approvalEvidence) => approvalEvidence.payload.decision === "approved")
-    .map((approvalEvidence) => approvalEvidence.payload.edge);
+    .filter((approvalEvidence) => approvalEvidence.payload.approval.decision === "approved")
+    .map((approvalEvidence) => approvalEvidence.payload.approval.edge);
   if (approvedEdges.length === 0) {
     return {
       outcome: "blocked",
@@ -610,8 +664,9 @@ function authorizeAgentCall(
  *   maximum 300-second freshness lease. Freshness limits replay but does not
  *   prove synchronous current state after the assertion instant.
  * - Agent-call authority comes only from complete, decided, Ed25519-attested
- *   call-graph edge approval artifacts. Every selected artifact is verified
- *   before its decision or policy fields are used.
+ *   call-graph edge approval artifacts with a maximum 300-second authority
+ *   lease. Every selected artifact is verified, checked for decision/assertion
+ *   causality, and checked for freshness before decision fields are used.
  * - Run context, run identity, cycle chain, and remaining budgets are carried
  *   only by signed, content-bound evidence with a maximum 300-second freshness
  *   window. An allowed agent call returns an unsigned child-context draft for
@@ -621,9 +676,11 @@ function authorizeAgentCall(
  *   parent spend consumption, single-use semantics, parent-child issuance, or
  *   current run identity. Sibling and nonce replay require a later runtime
  *   store or parent-decision linkage.
- * - Edge approval attestation proves presented origin and integrity, not that
- *   the artifact is the latest canonical decision, remains unrevoked, or is
- *   protected from replay. decidedAt is not an authority-freshness lease.
+ * - Edge approval leases limit replay but do not prove that an artifact is the
+ *   latest canonical decision, remains unrevoked inside the lease window, or
+ *   is single-use. decidedAt stays audit history and never starts the lease.
+ *   A stale relevant rejected artifact blocks fail-closed, allowing presenter
+ *   self-denial but no privilege escalation; rejection is not revocation.
  * - External signing, private-key custody, KMS/HSM, key revocation, nonce replay
  *   storage, synchronous lifecycle lookup, process liveness, channel resolution,
  *   and real execution remain out of scope.

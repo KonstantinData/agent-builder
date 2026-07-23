@@ -22,7 +22,7 @@ export const ACTING_LIFECYCLE_ATTESTATION_DOMAIN =
 export const CALLEE_LIFECYCLE_ATTESTATION_DOMAIN =
   "agent-builder/attest/lifecycle/callee/v1";
 export const CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN =
-  "agent-builder/attest/approval/call-graph-edge/v1";
+  "agent-builder/attest/approval/call-graph-edge/v2";
 export const RUN_CONTEXT_ATTESTATION_DOMAIN =
   "agent-builder/attest/run-context/v1";
 
@@ -45,6 +45,38 @@ export const LifecycleEvidenceFreshnessTtlSchema = z
   .max(MAX_LIFECYCLE_EVIDENCE_FRESHNESS_SECONDS);
 export type LifecycleEvidenceFreshnessTtl = z.infer<
   typeof LifecycleEvidenceFreshnessTtlSchema
+>;
+
+export const MAX_CALL_GRAPH_EDGE_APPROVAL_EVIDENCE_FRESHNESS_SECONDS = 300;
+
+export const CallGraphEdgeApprovalEvidenceFreshnessTtlSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(MAX_CALL_GRAPH_EDGE_APPROVAL_EVIDENCE_FRESHNESS_SECONDS);
+export type CallGraphEdgeApprovalEvidenceFreshnessTtl = z.infer<
+  typeof CallGraphEdgeApprovalEvidenceFreshnessTtlSchema
+>;
+
+export const CALL_GRAPH_EDGE_APPROVAL_FRESHNESS_CONDITIONS = [
+  "from_future",
+  "expired",
+] as const;
+export const CallGraphEdgeApprovalFreshnessConditionSchema = z.enum(
+  CALL_GRAPH_EDGE_APPROVAL_FRESHNESS_CONDITIONS,
+);
+export type CallGraphEdgeApprovalFreshnessCondition = z.infer<
+  typeof CallGraphEdgeApprovalFreshnessConditionSchema
+>;
+
+export const CALL_GRAPH_EDGE_APPROVAL_INVALID_CONDITIONS = [
+  "decision_after_assertion",
+] as const;
+export const CallGraphEdgeApprovalInvalidConditionSchema = z.enum(
+  CALL_GRAPH_EDGE_APPROVAL_INVALID_CONDITIONS,
+);
+export type CallGraphEdgeApprovalInvalidCondition = z.infer<
+  typeof CallGraphEdgeApprovalInvalidConditionSchema
 >;
 
 export const MAX_RUN_CONTEXT_EVIDENCE_FRESHNESS_SECONDS = 300;
@@ -175,14 +207,35 @@ export const AttestedRuntimeBindingEvidenceSchema = z
 export const _attestedRuntimeBindingEvidenceTypeBinding =
   AttestedRuntimeBindingEvidenceSchema satisfies z.ZodType<AttestedRuntimeBindingEvidence>;
 
+/**
+ * A short-lived Control Plane assertion that a decided edge approval remains
+ * usable authority. `decidedAt` stays immutable decision history; `assertedAt`
+ * starts the independently renewable runtime authority lease.
+ */
+export interface CallGraphEdgeApprovalEvidencePayload {
+  readonly approval: DecidedCallGraphEdgeApproval;
+  readonly assertedAt: string;
+  readonly freshnessTtl: CallGraphEdgeApprovalEvidenceFreshnessTtl;
+}
+
+export const CallGraphEdgeApprovalEvidencePayloadSchema = z
+  .object({
+    approval: DecidedCallGraphEdgeApprovalSchema,
+    assertedAt: Rfc3339WithOffsetSchema,
+    freshnessTtl: CallGraphEdgeApprovalEvidenceFreshnessTtlSchema,
+  })
+  .strict();
+export const _callGraphEdgeApprovalEvidencePayloadTypeBinding =
+  CallGraphEdgeApprovalEvidencePayloadSchema satisfies z.ZodType<CallGraphEdgeApprovalEvidencePayload>;
+
 export interface AttestedCallGraphEdgeApproval {
-  readonly payload: DecidedCallGraphEdgeApproval;
+  readonly payload: CallGraphEdgeApprovalEvidencePayload;
   readonly attestation: AttestationEnvelope;
 }
 
 export const AttestedCallGraphEdgeApprovalSchema = z
   .object({
-    payload: DecidedCallGraphEdgeApprovalSchema,
+    payload: CallGraphEdgeApprovalEvidencePayloadSchema,
     attestation: AttestationEnvelopeSchema,
   })
   .strict();
