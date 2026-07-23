@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApprovalArtifactSchema } from "../../src/schema/approval-artifact.js";
+import { DecidedCallGraphEdgeApprovalSchema } from "../../src/schema/approval-artifact.js";
 import {
   AgentLifecycleEvidencePayloadSchema,
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
@@ -16,6 +16,7 @@ import { RuntimeBindingArtifactSchema } from "../../src/schema/runtime-binding.j
 import { validAgentSpecContent } from "../fixtures/specs.js";
 import {
   TEST_TRUSTED_ATTESTATION_KEY,
+  attestCallGraphEdgeApproval,
   attestLifecycle,
   signPayload,
 } from "../support/runtime-attestation.js";
@@ -55,7 +56,7 @@ const callContext = {
   remainingTimeBudget: 30_000,
 };
 
-const edgeApproval = ApprovalArtifactSchema.parse({
+const edgeApprovalPayload = DecidedCallGraphEdgeApprovalSchema.parse({
   type: "call_graph_edge",
   artifactId: "approval-edge-001",
   requestedBy: "builder-agent",
@@ -76,6 +77,7 @@ const edgeApproval = ApprovalArtifactSchema.parse({
     trustDomainId: "domain-sales",
   },
 });
+const edgeApprovalEvidence = attestCallGraphEdgeApproval(edgeApprovalPayload);
 
 const candidate = {
   spec: validAgentSpecContent,
@@ -84,7 +86,7 @@ const candidate = {
   action: { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" },
   callContext,
   currentRunId: "run-root",
-  edgeApprovals: [edgeApproval],
+  attestedEdgeApprovals: [edgeApprovalEvidence],
 };
 
 describe("Runtime authorization schemas", () => {
@@ -116,12 +118,20 @@ describe("Runtime authorization schemas", () => {
     ).toBe(true);
   });
 
-  it("requires acting evidence while keeping binding and callee evidence structurally optional", () => {
+  it("requires acting and edge approval evidence while keeping binding and callee evidence structurally optional", () => {
     expect(RuntimeAuthorizationInputSchema.safeParse(candidate).success).toBe(true);
     const { runtimeBindingEvidence: _binding, ...withoutBinding } = candidate;
     expect(RuntimeAuthorizationInputSchema.safeParse(withoutBinding).success).toBe(true);
     const { actingLifecycleEvidence: _acting, ...withoutActing } = candidate;
     expect(RuntimeAuthorizationInputSchema.safeParse(withoutActing).success).toBe(false);
+    const { attestedEdgeApprovals: _edges, ...withoutEdges } = candidate;
+    expect(RuntimeAuthorizationInputSchema.safeParse(withoutEdges).success).toBe(false);
+    expect(
+      RuntimeAuthorizationInputSchema.safeParse({
+        ...candidate,
+        attestedEdgeApprovals: [],
+      }).success,
+    ).toBe(true);
 
     const agentCandidate = {
       ...candidate,
@@ -136,14 +146,31 @@ describe("Runtime authorization schemas", () => {
     expect(RuntimeAuthorizationInputSchema.safeParse(agentCandidate).success).toBe(true);
   });
 
-  it("rejects legacy metadata, raw edges, and malformed presented callee evidence", () => {
+  it("rejects legacy metadata, raw approval fields, and malformed presented evidence", () => {
     expect(
       RuntimeAuthorizationInputSchema.safeParse({ ...candidate, metadata: { state: "deployed" } }).success,
     ).toBe(false);
     expect(
       RuntimeAuthorizationInputSchema.safeParse({
         ...candidate,
-        edgeApprovals: [edgeApproval.type === "call_graph_edge" ? edgeApproval.edge : {}],
+        attestedEdgeApprovals: [edgeApprovalPayload.edge],
+      }).success,
+    ).toBe(false);
+    expect(
+      RuntimeAuthorizationInputSchema.safeParse({
+        ...candidate,
+        edgeApprovals: [edgeApprovalPayload],
+      }).success,
+    ).toBe(false);
+    expect(
+      RuntimeAuthorizationInputSchema.safeParse({
+        ...candidate,
+        attestedEdgeApprovals: [
+          {
+            ...edgeApprovalEvidence,
+            payload: { ...edgeApprovalPayload, decision: "pending" },
+          },
+        ],
       }).success,
     ).toBe(false);
     expect(

@@ -5,14 +5,16 @@ import {
   RUNTIME_EXECUTABLE_STATES,
   authorizeRuntimeAction as authorizeRuntimeActionWithContext,
 } from "../../src/runtime/authorize-runtime-action.js";
-import { ApprovalArtifactSchema, type ApprovalArtifact } from "../../src/schema/approval-artifact.js";
+import { DecidedCallGraphEdgeApprovalSchema } from "../../src/schema/approval-artifact.js";
 import { AgentSpecContentSchema, type AgentSpecContent } from "../../src/schema/agent-spec-content.js";
 import { LifecycleStateSchema } from "../../src/schema/agent-spec-runtime-metadata.js";
 import { CallContextSchema, type CallContext } from "../../src/schema/call-context.js";
 import { SpecIdSchema } from "../../src/schema/common.js";
 import {
   AgentLifecycleEvidencePayloadSchema,
+  type AttestationEvidenceKind,
   type AttestedAgentLifecycleEvidence,
+  type AttestedCallGraphEdgeApproval,
   type AttestedRuntimeBindingEvidence,
 } from "../../src/schema/runtime-attestation.js";
 import {
@@ -28,6 +30,7 @@ import {
   TEST_ATTESTATION_KEY_ID,
   TEST_TRUSTED_ATTESTATION_KEY,
   attestLifecycle,
+  attestCallGraphEdgeApproval,
   attestRuntimeBinding,
 } from "../support/runtime-attestation.js";
 
@@ -90,6 +93,22 @@ const authorizationContext: TrustedRuntimeAuthorizationContext = {
   attestationKeys: [TEST_TRUSTED_ATTESTATION_KEY],
 };
 
+function contextWithoutEvidenceKind(
+  evidenceKind: AttestationEvidenceKind,
+): TrustedRuntimeAuthorizationContext {
+  return {
+    ...authorizationContext,
+    attestationKeys: [
+      {
+        ...TEST_TRUSTED_ATTESTATION_KEY,
+        allowedEvidenceKinds: TEST_TRUSTED_ATTESTATION_KEY.allowedEvidenceKinds.filter(
+          (allowedKind) => allowedKind !== evidenceKind,
+        ),
+      },
+    ],
+  };
+}
+
 function authorizeRuntimeAction(
   input: RuntimeAuthorizationInput,
   overrides: Partial<TrustedRuntimeAuthorizationContext> = {},
@@ -113,8 +132,11 @@ function callContext(overrides: Record<string, unknown> = {}): CallContext {
   });
 }
 
-function edgeApproval(overrides: Record<string, unknown> = {}): ApprovalArtifact {
-  return ApprovalArtifactSchema.parse({
+function edgeApproval(
+  edgeOverrides: Record<string, unknown> = {},
+  approvalOverrides: Record<string, unknown> = {},
+): AttestedCallGraphEdgeApproval {
+  const payload = DecidedCallGraphEdgeApprovalSchema.parse({
     type: "call_graph_edge",
     artifactId: "approval-edge-001",
     requestedBy: "builder-agent",
@@ -133,9 +155,11 @@ function edgeApproval(overrides: Record<string, unknown> = {}): ApprovalArtifact
       maxCallsPerTimeWindow: 100,
       requiresHumanGate: false,
       trustDomainId: "domain-sales",
-      ...overrides,
+      ...edgeOverrides,
     },
+    ...approvalOverrides,
   });
+  return attestCallGraphEdgeApproval(payload);
 }
 
 function baseInput(overrides: Partial<RuntimeAuthorizationInput> = {}): RuntimeAuthorizationInput {
@@ -150,7 +174,7 @@ function baseInput(overrides: Partial<RuntimeAuthorizationInput> = {}): RuntimeA
     action: { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme:crm" },
     callContext: callContext(),
     currentRunId: "run-current",
-    edgeApprovals: [edgeApproval()],
+    attestedEdgeApprovals: [edgeApproval()],
     ...overrides,
   };
 }
@@ -171,7 +195,7 @@ function agentInput(overrides: Partial<RuntimeAuthorizationInput> = {}): Runtime
   });
 }
 
-function mutateSignature<T extends AttestedRuntimeBindingEvidence | AttestedAgentLifecycleEvidence>(
+function mutateSignature<T extends AttestedRuntimeBindingEvidence | AttestedAgentLifecycleEvidence | AttestedCallGraphEdgeApproval>(
   evidence: T,
 ): T {
   const signature = Buffer.from(evidence.attestation.signatureBase64, "base64");
@@ -307,6 +331,25 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
       reason: { type: "attestation_key_unknown", evidenceKind, keyId: "unknown-key" },
     });
   });
+
+  it.each(["runtime_binding", "acting_lifecycle"] as const)(
+    "treats a trusted key without `%s` authority as unknown for that evidence kind",
+    (evidenceKind) => {
+      expect(
+        authorizeRuntimeActionWithContext(
+          baseInput(),
+          contextWithoutEvidenceKind(evidenceKind),
+        ),
+      ).toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "attestation_key_unknown",
+          evidenceKind,
+          keyId: TEST_ATTESTATION_KEY_ID,
+        },
+      });
+    },
+  );
 
   it.each([
     ["runtime_binding", "runtimeBindingEvidence"],
@@ -701,6 +744,39 @@ describe("authorizeRuntimeAction tool semantics", () => {
     });
   });
 
+  it("ignores structurally valid edge evidence for tool calls without inspecting its key or signature", () => {
+    const unknownKey = edgeApproval();
+    expect(
+      authorizeRuntimeAction(
+        baseInput({
+          attestedEdgeApprovals: [
+            {
+              ...unknownKey,
+              attestation: { ...unknownKey.attestation, keyId: "unknown-key" },
+            },
+            mutateSignature(edgeApproval({ trustDomainId: "domain-foreign" })),
+          ],
+        }),
+      ),
+    ).toEqual({ outcome: "allowed", actionType: "tool_call" });
+  });
+
+  it("rejects structurally invalid edge evidence even for tool calls", () => {
+    const input = {
+      ...baseInput(),
+      attestedEdgeApprovals: [
+        {
+          payload: { ...edgeApproval().payload, decision: "pending" },
+          attestation: edgeApproval().attestation,
+        },
+      ],
+    } as unknown as RuntimeAuthorizationInput;
+    expect(authorizeRuntimeAction(input)).toEqual({
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
+    });
+  });
+
   it("keeps exact tool declaration and scope checks", () => {
     expect(
       authorizeRuntimeAction(
@@ -733,6 +809,246 @@ describe("authorizeRuntimeAction agent calls", () => {
         remainingTimeBudget: 10_000,
       },
     });
+  });
+
+  it.each([
+    { callerSpecId: "spec-other" },
+    { callerVersion: "9.9.9" },
+    { calleeSpecId: "spec-other" },
+    { calleeVersionOrChannel: "stable" },
+    { trustDomainId: "domain-foreign" },
+  ])("treats a five-field edge subject mismatch as irrelevant: %o", (edgeOverrides) => {
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [edgeApproval(edgeOverrides)] }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "call_edge_not_approved",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+      },
+    });
+  });
+
+  it("never authorizes through tampered join fields", () => {
+    const foreign = edgeApproval({ calleeSpecId: "spec-foreign" });
+    const tamperedIntoRelevance = {
+      ...foreign,
+      payload: {
+        ...foreign.payload,
+        edge: {
+          ...foreign.payload.edge,
+          calleeSpecId: SpecIdSchema.parse("spec-web-search"),
+        },
+      },
+    };
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [tamperedIntoRelevance] }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_invalid", evidenceKind: "call_graph_edge_approval" },
+    });
+
+    const relevant = edgeApproval();
+    const tamperedOutOfRelevance = {
+      ...relevant,
+      payload: {
+        ...relevant.payload,
+        edge: {
+          ...relevant.payload.edge,
+          calleeSpecId: SpecIdSchema.parse("spec-foreign"),
+        },
+      },
+    };
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [tamperedOutOfRelevance] }),
+      ),
+    ).toMatchObject({ reason: { type: "call_edge_not_approved" } });
+  });
+
+  it("ignores cryptographically invalid irrelevant evidence but verifies every relevant entry", () => {
+    const irrelevant = edgeApproval({ calleeSpecId: "spec-foreign" });
+    const irrelevantUnknownKey = {
+      ...irrelevant,
+      attestation: { ...irrelevant.attestation, keyId: "unknown-key" },
+    };
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          attestedEdgeApprovals: [
+            irrelevantUnknownKey,
+            mutateSignature(edgeApproval({ trustDomainId: "domain-foreign" })),
+            edgeApproval(),
+          ],
+        }),
+      ),
+    ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          attestedEdgeApprovals: [
+            edgeApproval(),
+            mutateSignature(edgeApproval({}, { decision: "rejected", reason: "denied" })),
+          ],
+        }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_invalid", evidenceKind: "call_graph_edge_approval" },
+    });
+  });
+
+  it("uses input order for relevant attestation failures before decision filtering", () => {
+    const unknownKey = edgeApproval({}, { decision: "rejected", reason: "denied" });
+    const withUnknownKey = {
+      ...unknownKey,
+      attestation: { ...unknownKey.attestation, keyId: "unknown-key" },
+    };
+    const invalidSignature = mutateSignature(
+      edgeApproval({}, { decision: "rejected", reason: "denied" }),
+    );
+
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [withUnknownKey, invalidSignature] }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_key_unknown", evidenceKind: "call_graph_edge_approval" },
+    });
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [invalidSignature, withUnknownKey] }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_invalid", evidenceKind: "call_graph_edge_approval" },
+    });
+  });
+
+  it("filters only verified rejected decisions before authority evaluation", () => {
+    const rejected = edgeApproval(
+      { requiresHumanGate: true },
+      { decision: "rejected", reason: "denied" },
+    );
+    expect(
+      authorizeRuntimeAction(agentInput({ attestedEdgeApprovals: [rejected] })),
+    ).toMatchObject({ reason: { type: "call_edge_not_approved" } });
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [rejected, edgeApproval()] }),
+      ),
+    ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
+  });
+
+  it("treats a missing or wrong approval key scope identically to an unknown key", () => {
+    const evidence = edgeApproval();
+    const unknownKeyEvidence = {
+      ...evidence,
+      attestation: { ...evidence.attestation, keyId: "unknown-key" },
+    };
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [unknownKeyEvidence] }),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "attestation_key_unknown",
+        evidenceKind: "call_graph_edge_approval",
+        keyId: "unknown-key",
+      },
+    });
+    expect(
+      authorizeRuntimeActionWithContext(
+        agentInput({ attestedEdgeApprovals: [mutateSignature(edgeApproval())] }),
+        contextWithoutEvidenceKind("call_graph_edge_approval"),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "attestation_key_unknown",
+        evidenceKind: "call_graph_edge_approval",
+        keyId: TEST_ATTESTATION_KEY_ID,
+      },
+    });
+  });
+
+  it("keeps lifecycle and approval key purposes independently scoped", () => {
+    expect(
+      authorizeRuntimeActionWithContext(
+        agentInput(),
+        contextWithoutEvidenceKind("callee_lifecycle"),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "attestation_key_unknown",
+        evidenceKind: "callee_lifecycle",
+        keyId: TEST_ATTESTATION_KEY_ID,
+      },
+    });
+  });
+
+  it("keeps global and declaration guards ahead of edge attestation", () => {
+    const invalidApproval = mutateSignature(edgeApproval());
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, {
+            deployedAt: "2026-07-23T10:00:00Z",
+            ttl: 1,
+          }),
+          attestedEdgeApprovals: [invalidApproval],
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "runtime_binding_expired" } });
+
+    const undeclaredAction = {
+      ...agentAction,
+      calleeSpecId: SpecIdSchema.parse("spec-billing"),
+    };
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          action: undeclaredAction,
+          attestedEdgeApprovals: [
+            mutateSignature(edgeApproval({ calleeSpecId: "spec-billing" })),
+          ],
+        }),
+      ),
+    ).toMatchObject({ reason: { type: "agent_call_not_declared" } });
+  });
+
+  it("checks selected approval attestation before policy, cycle, and callee guards", () => {
+    expect(
+      authorizeRuntimeAction(
+        agentInput({
+          attestedEdgeApprovals: [
+            mutateSignature(
+              edgeApproval({ requiresHumanGate: true, allowedIntents: ["delegate"] }),
+            ),
+          ],
+          callContext: callContext({
+            callChain: ["spec-web-search", "spec-crm-enricher"],
+          }),
+          calleeLifecycleEvidence: mutateSignature(lifecycleEvidence("callee")),
+        }),
+      ),
+    ).toMatchObject({
+      reason: { type: "attestation_invalid", evidenceKind: "call_graph_edge_approval" },
+    });
+  });
+
+  it("treats duplicate presentation of the same approved evidence as ambiguous", () => {
+    const evidence = edgeApproval();
+    expect(
+      authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [evidence, structuredClone(evidence)] }),
+      ),
+    ).toMatchObject({ reason: { type: "ambiguous_call_edge_approval" } });
   });
 
   it("requires callee lifecycle evidence only after cycle detection", () => {
@@ -922,12 +1238,12 @@ describe("authorizeRuntimeAction agent calls", () => {
       ),
     ).toMatchObject({ reason: { type: "agent_call_not_declared" } });
     expect(
-      authorizeRuntimeAction(agentInput({ edgeApprovals: [], calleeLifecycleEvidence: invalidCallee })),
+      authorizeRuntimeAction(agentInput({ attestedEdgeApprovals: [], calleeLifecycleEvidence: invalidCallee })),
     ).toMatchObject({ reason: { type: "call_edge_not_approved" } });
     expect(
       authorizeRuntimeAction(
         agentInput({
-          edgeApprovals: [
+          attestedEdgeApprovals: [
             edgeApproval({ requiresHumanGate: false }),
             edgeApproval({ requiresHumanGate: true }),
           ],
@@ -938,7 +1254,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     expect(
       authorizeRuntimeAction(
         agentInput({
-          edgeApprovals: [edgeApproval(), edgeApproval({ maxCallsPerRun: 2 })],
+          attestedEdgeApprovals: [edgeApproval(), edgeApproval({ maxCallsPerRun: 2 })],
           calleeLifecycleEvidence: invalidCallee,
         }),
       ),
@@ -946,7 +1262,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     expect(
       authorizeRuntimeAction(
         agentInput({
-          edgeApprovals: [edgeApproval({ allowedIntents: ["delegate"] })],
+          attestedEdgeApprovals: [edgeApproval({ allowedIntents: ["delegate"] })],
           calleeLifecycleEvidence: invalidCallee,
         }),
       ),
@@ -1000,7 +1316,7 @@ describe("authorizeRuntimeAction agent calls", () => {
             versionOrChannel: stableSpec.version,
           }),
           action: stableAction,
-          edgeApprovals: [edgeApproval({ calleeVersionOrChannel: "stable" })],
+          attestedEdgeApprovals: [edgeApproval({ calleeVersionOrChannel: "stable" })],
           calleeLifecycleEvidence: lifecycleEvidence("callee", {
             versionOrChannel: "stable",
           }),

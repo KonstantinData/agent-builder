@@ -278,10 +278,11 @@ Two runtime invariants that per-edge fields alone cannot guarantee:
 Runtime Harness v0.1 is a Data Plane authorization slice, not an execution runtime.
 It consumes an already-approved spec version, a signed full runtime-binding artifact,
 required signed lifecycle evidence for the acting spec, optional signed lifecycle
-evidence for an agent-call target, approved call-graph edge approval artifacts, a call
-context, and a planned runtime action. Its trusted context supplies the authorization
-instant and Ed25519 public-key set. It returns `allowed` or `blocked` and, for allowed
-agent-to-agent calls, the derived next call context.
+evidence for an agent-call target, decided and signed call-graph edge approval
+artifacts, a call context, and a planned runtime action. Its trusted context supplies
+the authorization instant and evidence-scoped Ed25519 public-key set. It returns
+`allowed` or `blocked` and, for allowed agent-to-agent calls, the derived next call
+context.
 
 Mutable `AgentSpecRuntimeMetadata` is deliberately not a runtime authorization input.
 The signed `RuntimeBindingArtifact` supplies immutable deployment identity, content
@@ -310,6 +311,8 @@ Runtime Harness v0.1 enforces:
 - cycle rejection using the full call chain
 - exact-subject signed lifecycle evidence for agent-call targets, with only `deployed`
   currently callable and at most 300 seconds of freshness
+- decided, full-artifact call-graph edge approval attestations, selected by exact
+  caller/callee/version/channel identity and the acting spec's verified trust domain
 - depth, call-budget, token-budget, and time-budget spend-down without runtime budget
   increases
 
@@ -407,7 +410,11 @@ Agent-call guard priority is deterministic after the global Runtime Harness guar
 
 ```text
 declared call
-  -> approved edge selection
+  -> edge-evidence relevance prefilter over five signed subject fields
+  -> every selected approval key known and authorized for its evidence kind
+  -> every selected approval signature valid, in input order
+  -> verified evidence filtered to decision approved
+  -> approved edge present
   -> human gate
   -> ambiguous edge
   -> intent intersection
@@ -422,6 +429,13 @@ declared call
   -> call budget
   -> child-budget monotonicity
 ```
+
+The edge prefilter is relevance-only: it may read the structurally validated signed
+join fields, but no decision, human-gate, intent, data-share, depth, or budget field
+before every selected artifact has passed attestation. Evidence outside the exact
+five-field join is semantically ignored, even if its key or signature is invalid.
+Selected evidence is verified fail-closed in input order before rejected decisions
+are filtered out.
 
 The semantic failures include `callee_lifecycle_evidence_missing`, generic attestation
 failures, `lifecycle_evidence_subject_mismatch` with role `callee`,
@@ -467,13 +481,17 @@ AttestationEnvelope
 
 TrustedRuntimeAuthorizationContext
   authorization_time
-  attestation_keys[]                # unique key_id + canonical Ed25519 SPKI DER
+  attestation_keys[]                # unique key_id + Ed25519 SPKI DER + allowed evidence kinds
 ```
 
 The trusted keyset is non-empty and may contain multiple keys during rotation. Every
-key must be canonical DER/SPKI that parses specifically as Ed25519 and re-exports to
-the identical bytes. Empty, duplicate-ID, malformed, non-canonical, or non-Ed25519
-keysets invalidate the trusted context. The caller never supplies a verification key.
+key must be canonical DER/SPKI that parses specifically as Ed25519, re-exports to the
+identical bytes, and declares a non-empty duplicate-free `allowed_evidence_kinds`
+list. Empty, duplicate-ID, malformed, non-canonical, non-Ed25519, or unscoped keysets
+invalidate the trusted context. A key is trusted only for its explicitly listed
+evidence kinds. `attestation_key_unknown` deliberately does not distinguish a missing
+key ID from a present key that is not trusted for the requested evidence kind. The
+caller never supplies a verification key.
 
 The Ed25519 preimage is byte-defined:
 
@@ -482,14 +500,16 @@ UTF8(DOMAIN_TAG + "\n" + JSON.stringify(canonicalize(validated_payload)))
 ```
 
 Only the strict schema-validated payload is signed. The envelope, key ID, and
-signature are not part of the signed bytes. Payload fields are all required and use
-only strings and integers; no optional or floating-point signed field is permitted.
-The three versioned domain tags prevent type and role replay:
+signature are not part of the signed bytes. Step-10 binding and lifecycle payload
+fields are all required and use only strings and integers; no optional or
+floating-point Step-10 signed field is permitted. Four versioned domain tags now
+prevent type and role replay across Steps 10 and 11:
 
 ```text
 agent-builder/attest/runtime-binding/v1
 agent-builder/attest/lifecycle/acting/v1
 agent-builder/attest/lifecycle/callee/v1
+agent-builder/attest/approval/call-graph-edge/v1
 ```
 
 The runtime binding payload is the complete `RuntimeBindingArtifact`, including
@@ -536,12 +556,72 @@ spec. `runtime_state_not_executable` reads signed acting lifecycle state.
 The earlier `callee_lifecycle_subject_mismatch` code is retired in favor of the generic
 role-bearing lifecycle reason.
 
+### Call-Graph Edge Approval Attestation v0.1
+
+Step 11 removes raw `edge_approvals` from `RuntimeAuthorizationInput`. The replacement
+is a required array, which may be empty:
+
+```text
+AttestedCallGraphEdgeApproval
+  payload: DecidedCallGraphEdgeApproval
+    type: call_graph_edge
+    artifact_id
+    requested_by
+    decision: approved | rejected
+    decided_by
+    decided_at
+    reason?                              # non-empty when present
+    edge: AgentCallPolicyEdge            # complete edge, no projection
+  attestation: AttestationEnvelope
+```
+
+`pending` is workflow state, not runtime authority, and is rejected at the structural
+boundary. `decided_by` is non-empty and `decided_at` is RFC 3339 with an explicit
+offset. The sole optional signed field is `reason`: omitted and explicit `undefined`
+normalize to the same canonical JSON omission, `null` and the empty string are invalid,
+and a present non-empty reason is signature-bound.
+
+The domain is `agent-builder/attest/approval/call-graph-edge/v1`; its evidence kind is
+`call_graph_edge_approval`. The payload is selected only for relevance before
+attestation. The exact join is:
+
+```text
+edge.caller_spec_id == spec.spec_id
+edge.caller_version == spec.version
+edge.callee_spec_id == action.callee_spec_id
+edge.callee_version_or_channel == action.callee_version_or_channel
+edge.trust_domain_id == spec.trust_domain_id
+```
+
+For v0.1, an edge's scalar `trust_domain_id` denotes the caller's trust domain. The
+spec side of that comparison is already protected by the recomputed spec hash and
+attested runtime binding. Cross-domain reachability still requires a separate Control
+Plane policy decision; this slice introduces no bridge-domain semantics.
+
+Every relevant entry is verified in input order before its `decision` or any policy
+field is read. An invalid relevant rejected artifact therefore still blocks; it is not
+discarded before verification. After all relevant entries verify, rejected decisions
+are removed. No remaining approved entry yields `call_edge_not_approved`; any
+human-gated approved entry wins before ambiguity; multiple approved entries, including
+duplicate presentation of one artifact, yield `ambiguous_call_edge_approval`.
+Cryptographically invalid but subject-irrelevant evidence is ignored. Structurally
+invalid evidence makes the full input invalid. Tool calls likewise ignore all
+structurally valid edge evidence without inspecting keys, signatures, decisions, or
+policy fields.
+
+No new reason type is introduced. `attestation_key_unknown` and
+`attestation_invalid` use evidence kind `call_graph_edge_approval`; the existing edge
+policy reasons remain unchanged.
+
 Known v0.1 boundaries:
 
 - Signed lifecycle freshness bounds evidence age but does not prove synchronous
   current state after `asserted_at`; there is no lifecycle store lookup.
-- Call-graph approval artifacts remain caller-supplied and unsigned. Approval
-  provenance attestation is implementation Step 11, not part of Step 10.
+- A presented decided call-graph approval now has authenticated origin and integrity,
+  but the harness does not prove that it is the latest canonical decision, that it was
+  not later revoked, or that an old valid approval is not being replayed. `decided_at`
+  is audit evidence, not a freshness lease. Approval versioning, revocation lookup,
+  and time-bounded authority evidence remain later slices.
 - Parent context spend-down is caller-owned in v0.1. The harness returns the authorized
   child context for an agent call; it does not mutate or return the parent context for
   later sibling calls.

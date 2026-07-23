@@ -1,13 +1,17 @@
 import { createPrivateKey, sign } from "node:crypto";
+import type { DecidedCallGraphEdgeApproval } from "../../src/schema/approval-artifact.js";
 import type {
   AgentLifecycleEvidencePayload,
   AttestationEnvelope,
   AttestedAgentLifecycleEvidence,
+  AttestedCallGraphEdgeApproval,
   AttestedRuntimeBindingEvidence,
   TrustedAttestationKey,
 } from "../../src/schema/runtime-attestation.js";
 import {
   ACTING_LIFECYCLE_ATTESTATION_DOMAIN,
+  ATTESTATION_EVIDENCE_KINDS,
+  CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN,
   CALLEE_LIFECYCLE_ATTESTATION_DOMAIN,
   RUNTIME_BINDING_ATTESTATION_DOMAIN,
 } from "../../src/schema/runtime-attestation.js";
@@ -30,11 +34,13 @@ export const SECOND_TEST_PUBLIC_KEY_SPKI_DER_BASE64 =
 export const TEST_TRUSTED_ATTESTATION_KEY: TrustedAttestationKey = {
   keyId: TEST_ATTESTATION_KEY_ID,
   publicKeySpkiDerBase64: TEST_PUBLIC_KEY_SPKI_DER_BASE64,
+  allowedEvidenceKinds: [...ATTESTATION_EVIDENCE_KINDS],
 };
 
 export const SECOND_TEST_TRUSTED_ATTESTATION_KEY: TrustedAttestationKey = {
   keyId: SECOND_TEST_ATTESTATION_KEY_ID,
   publicKeySpkiDerBase64: SECOND_TEST_PUBLIC_KEY_SPKI_DER_BASE64,
+  allowedEvidenceKinds: [...ATTESTATION_EVIDENCE_KINDS],
 };
 
 export function signPayload(
@@ -75,4 +81,13 @@ export function attestLifecycle(
       ? ACTING_LIFECYCLE_ATTESTATION_DOMAIN
       : CALLEE_LIFECYCLE_ATTESTATION_DOMAIN;
   return { payload, attestation: signPayload(domain, payload) };
+}
+
+export function attestCallGraphEdgeApproval(
+  payload: DecidedCallGraphEdgeApproval,
+): AttestedCallGraphEdgeApproval {
+  return {
+    payload,
+    attestation: signPayload(CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN, payload),
+  };
 }

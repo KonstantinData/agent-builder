@@ -1,6 +1,10 @@
 import { createPublicKey } from "node:crypto";
 import { z } from "zod";
 import { LifecycleStateSchema, type LifecycleState } from "./agent-spec-runtime-metadata.js";
+import {
+  DecidedCallGraphEdgeApprovalSchema,
+  type DecidedCallGraphEdgeApproval,
+} from "./approval-artifact.js";
 import { SpecIdSchema, type SpecId } from "./common.js";
 import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
 import { RuntimeBindingArtifactSchema, type RuntimeBindingArtifact } from "./runtime-binding.js";
@@ -11,6 +15,17 @@ export const ACTING_LIFECYCLE_ATTESTATION_DOMAIN =
   "agent-builder/attest/lifecycle/acting/v1";
 export const CALLEE_LIFECYCLE_ATTESTATION_DOMAIN =
   "agent-builder/attest/lifecycle/callee/v1";
+export const CALL_GRAPH_EDGE_APPROVAL_ATTESTATION_DOMAIN =
+  "agent-builder/attest/approval/call-graph-edge/v1";
+
+export const ATTESTATION_EVIDENCE_KINDS = [
+  "runtime_binding",
+  "acting_lifecycle",
+  "callee_lifecycle",
+  "call_graph_edge_approval",
+] as const;
+export const AttestationEvidenceKindSchema = z.enum(ATTESTATION_EVIDENCE_KINDS);
+export type AttestationEvidenceKind = z.infer<typeof AttestationEvidenceKindSchema>;
 
 export const MAX_LIFECYCLE_EVIDENCE_FRESHNESS_SECONDS = 300;
 
@@ -136,15 +151,47 @@ export const AttestedRuntimeBindingEvidenceSchema = z
 export const _attestedRuntimeBindingEvidenceTypeBinding =
   AttestedRuntimeBindingEvidenceSchema satisfies z.ZodType<AttestedRuntimeBindingEvidence>;
 
+export interface AttestedCallGraphEdgeApproval {
+  readonly payload: DecidedCallGraphEdgeApproval;
+  readonly attestation: AttestationEnvelope;
+}
+
+export const AttestedCallGraphEdgeApprovalSchema = z
+  .object({
+    payload: DecidedCallGraphEdgeApprovalSchema,
+    attestation: AttestationEnvelopeSchema,
+  })
+  .strict();
+export const _attestedCallGraphEdgeApprovalTypeBinding =
+  AttestedCallGraphEdgeApprovalSchema satisfies z.ZodType<AttestedCallGraphEdgeApproval>;
+
 export interface TrustedAttestationKey {
   readonly keyId: string;
   readonly publicKeySpkiDerBase64: string;
+  readonly allowedEvidenceKinds: ReadonlyArray<AttestationEvidenceKind>;
 }
+
+const AllowedEvidenceKindsSchema = z
+  .array(AttestationEvidenceKindSchema)
+  .min(1)
+  .superRefine((evidenceKinds, ctx) => {
+    const seenEvidenceKinds = new Set<AttestationEvidenceKind>();
+    for (const evidenceKind of evidenceKinds) {
+      if (seenEvidenceKinds.has(evidenceKind)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "allowed attestation evidence kinds must be unique",
+        });
+      }
+      seenEvidenceKinds.add(evidenceKind);
+    }
+  });
 
 export const TrustedAttestationKeySchema = z
   .object({
     keyId: z.string().min(1),
     publicKeySpkiDerBase64: Ed25519PublicKeySpkiDerBase64Schema,
+    allowedEvidenceKinds: AllowedEvidenceKindsSchema,
   })
   .strict();
 export const _trustedAttestationKeyTypeBinding =
@@ -165,14 +212,6 @@ export const TrustedAttestationKeysetSchema = z
       seenKeyIds.add(key.keyId);
     }
   });
-
-export const ATTESTATION_EVIDENCE_KINDS = [
-  "runtime_binding",
-  "acting_lifecycle",
-  "callee_lifecycle",
-] as const;
-export const AttestationEvidenceKindSchema = z.enum(ATTESTATION_EVIDENCE_KINDS);
-export type AttestationEvidenceKind = z.infer<typeof AttestationEvidenceKindSchema>;
 
 export const LIFECYCLE_EVIDENCE_ROLES = ["acting", "callee"] as const;
 export const LifecycleEvidenceRoleSchema = z.enum(LIFECYCLE_EVIDENCE_ROLES);
