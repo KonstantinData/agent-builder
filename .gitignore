@@ -8,8 +8,6 @@ pnpm-debug.log*
 /docs/learning/**
 !/docs/learning/pr-001-control-plane-schema-assembler/
 !/docs/learning/pr-001-control-plane-schema-assembler/Secure_Control_Plane_Architecture_Diagram.png
-!/docs/learning/pr-002-policy-evaluation-harness/
-!/docs/learning/pr-002-policy-evaluation-harness/Secure_Control_Plane_Architecture.webp
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

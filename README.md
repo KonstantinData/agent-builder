@@ -12,8 +12,6 @@ The core boundary is:
 
 ## Architecture
 
-![Agent Builder Secure Control Plane Architecture](docs/learning/pr-002-policy-evaluation-harness/Secure_Control_Plane_Architecture.webp)
-
 The implemented control-plane flow is:
 
 ```text
@@ -85,7 +83,7 @@ docs/
 ```
 
 `docs/learning/` is treated as local generated learning material and is ignored
-for new files, except for the architecture diagram embedded in this README.
+for new files.
 
 ## Requirements
 
