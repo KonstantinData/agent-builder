@@ -4,6 +4,12 @@ import {
   type RoadmapV1,
   type RunIntentV1,
 } from "./contracts.js";
+import {
+  ROADMAP_RECONCILIATION_POLICY_VERSION,
+  reconciliationBinding,
+  verifyRoadmapBaseReconciliationProofV1,
+  type RoadmapBaseReconciliationProofV1,
+} from "./roadmap-reconciliation.js";
 
 export const GLOBAL_FORBIDDEN_SURFACES = Object.freeze([
   ".github/",
@@ -29,12 +35,17 @@ export interface CommitReachabilityProof {
 }
 
 export type RoadmapSelection =
-  | { readonly kind: "selected"; readonly item: RoadmapItemV1 }
+  | {
+      readonly kind: "selected";
+      readonly item: RoadmapItemV1;
+      readonly baseReconciliation: ReturnType<typeof reconciliationBinding> | null;
+    }
   | { readonly kind: "completed" }
   | {
       readonly kind: "stopped";
       readonly reason:
         | "roadmap_history_unverified"
+        | "roadmap_base_reconciliation_unverified"
         | "roadmap_zero_eligible"
         | "roadmap_multiple_eligible";
       readonly blockers: readonly string[];
@@ -92,6 +103,7 @@ export function selectNextRoadmapItem(
   intent: RunIntentV1,
   verifiedOriginMainSha: string,
   ancestryProofs: readonly CommitReachabilityProof[],
+  baseReconciliationProof: RoadmapBaseReconciliationProofV1 | null = null,
 ): RoadmapSelection {
   const roadmap = RoadmapV1Schema.parse(roadmapInput);
   const proofBySha = new Map(ancestryProofs.map((proof) => [proof.commitSha, proof.reachableFromOriginMain]));
@@ -119,6 +131,12 @@ export function selectNextRoadmapItem(
     return { kind: "completed" };
   }
   const completedById = new Map(completed.map((item) => [item.stepId, item]));
+  const reconciledBaseIsValid = (item: RoadmapItemV1): boolean =>
+    roadmap.reconciliationPolicyVersion === ROADMAP_RECONCILIATION_POLICY_VERSION &&
+    baseReconciliationProof !== null &&
+    verifyRoadmapBaseReconciliationProofV1(baseReconciliationProof) &&
+    baseReconciliationProof.domainBaseSha === item.expectedBaseMergeSha &&
+    baseReconciliationProof.observedOriginMainSha === verifiedOriginMainSha;
   const eligible = incomplete.filter((item) => {
     const dependenciesVerified = item.dependencies.every((dependencyId) => {
       const dependency = completedById.get(dependencyId);
@@ -131,7 +149,7 @@ export function selectNextRoadmapItem(
       (path) => !surfaces.some((surface) => pathTouchesSurface(path, surface)),
     );
     return dependenciesVerified &&
-      item.expectedBaseMergeSha === verifiedOriginMainSha &&
+      (item.expectedBaseMergeSha === verifiedOriginMainSha || reconciledBaseIsValid(item)) &&
       intent.allowedChangeClasses.includes(item.changeClass) &&
       item.capabilityEffect === "reduce_or_preserve" &&
       item.deploymentEffect === "none" &&
@@ -140,13 +158,30 @@ export function selectNextRoadmapItem(
   });
 
   if (eligible.length === 1) {
-    return { kind: "selected", item: eligible[0]! };
+    const item = eligible[0]!;
+    return {
+      kind: "selected",
+      item,
+      baseReconciliation: item.expectedBaseMergeSha === verifiedOriginMainSha
+        ? null
+        : reconciliationBinding(baseReconciliationProof!),
+    };
   }
   if (eligible.length > 1) {
     return {
       kind: "stopped",
       reason: "roadmap_multiple_eligible",
       blockers: eligible.map((item) => item.stepId),
+    };
+  }
+  if (
+    incomplete.some((item) => item.expectedBaseMergeSha !== verifiedOriginMainSha) &&
+    !incomplete.some(reconciledBaseIsValid)
+  ) {
+    return {
+      kind: "stopped",
+      reason: "roadmap_base_reconciliation_unverified",
+      blockers: incomplete.map((item) => item.stepId),
     };
   }
   return {

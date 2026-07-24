@@ -3,6 +3,7 @@ import { domainSeparatedDigest } from "./canonical-json.js";
 import {
   EnvironmentAttestationV1Schema,
   RoadmapV1Schema,
+  RoadmapBaseReconciliationBindingV1Schema,
   Rfc3339InstantSchema,
   RunIntentV1Schema,
   type RoadmapItemV1,
@@ -24,6 +25,7 @@ import {
 import {
   createOrchestrationEvent,
   createVerifiedRunSnapshot,
+  RepositoryInspectionResultV1Schema,
   type OrchestrationEventKind,
   type OrchestrationSnapshotV1,
   type StopReason,
@@ -107,8 +109,28 @@ const StepSelectionPayloadSchema = z
   .object({
     stepId: z.string().min(1),
     successCriteria: z.array(z.string().min(1)).min(1),
+    baseReconciliation: RoadmapBaseReconciliationBindingV1Schema.nullable().optional(),
+    expectedBaseMergeSha: z.string().regex(/^[0-9a-f]{40}$/).optional(),
   })
   .passthrough();
+
+function repositoryInspectionValueDigest(value: {
+  readonly originMainSha: string;
+  readonly attendedLocal: boolean;
+  readonly completedStepReachability: Readonly<Record<string, boolean>>;
+  readonly baseReconciliationProof?: unknown;
+  readonly deploysOnMain: boolean;
+  readonly defaultBranchProtected: boolean;
+}): string {
+  return domainSeparatedDigest("agent-builder/orchestration/repository-inspection-value/v1", {
+    originMainSha: value.originMainSha,
+    attendedLocal: value.attendedLocal,
+    completedStepReachability: value.completedStepReachability,
+    baseReconciliationProof: value.baseReconciliationProof ?? null,
+    deploysOnMain: value.deploysOnMain,
+    defaultBranchProtected: value.defaultBranchProtected,
+  });
+}
 
 export class ControllerInvariantError extends Error {
   public constructor(message: string) {
@@ -327,11 +349,14 @@ export class AttendedOrchestrationController {
         }
         const result = await apply("RepositoryInspected", {
           evidenceDigest: inspection.evidenceDigest,
+          inspectionValueDigest: repositoryInspectionValueDigest(inspection.value),
           originMainSha: inspection.value.originMainSha,
           attendedLocal: inspection.value.attendedLocal,
           deploysOnMain: inspection.value.deploysOnMain,
           defaultBranchProtected: inspection.value.defaultBranchProtected,
           roadmapHistoryVerified: Object.values(inspection.value.completedStepReachability).every(Boolean),
+          completedStepReachability: inspection.value.completedStepReachability,
+          baseReconciliationProof: inspection.value.baseReconciliationProof ?? null,
         });
         if (result !== null) return result;
         continue;
@@ -339,15 +364,46 @@ export class AttendedOrchestrationController {
       if (snapshot.phase === "repository_inspected") {
         const inspector = request.adapters.repositoryInspector;
         if (inspector === undefined) return this.boundary(snapshot, "adapter_unavailable", "repositoryInspector", transitionsApplied);
-        const inspection = await inspector.inspect({ repository: request.intent.repository, expectedBaseRevision: request.intent.baseRevision, roadmap });
-        if (!verifyEvidenceEnvelope(inspection)) {
+        const persistedInspectionEvent = [...events].reverse().find((event) => event.kind === "RepositoryInspected");
+        const inspection = RepositoryInspectionResultV1Schema.safeParse(persistedInspectionEvent?.payload);
+        if (!inspection.success) throw new ControllerInvariantError("persisted repository inspection is missing or malformed");
+        if (
+          inspection.data.inspectionValueDigest === undefined ||
+          inspection.data.completedStepReachability === undefined
+        ) {
+          const result = await apply("StoppedForCause", { reason: "roadmap_base_reconciliation_unverified" });
+          if (result !== null) return result;
+          continue;
+        }
+        let confirmation;
+        try {
+          confirmation = await inspector.inspect({
+            repository: request.intent.repository,
+            expectedBaseRevision: request.intent.baseRevision,
+            roadmap,
+          });
+        } catch {
           const result = await apply("StoppedForCause", { reason: "adapter_error" });
           if (result !== null) return result;
           continue;
         }
-        const proofs: CommitReachabilityProof[] = Object.entries(inspection.value.completedStepReachability)
+        if (
+          !verifyEvidenceEnvelope(confirmation) ||
+          repositoryInspectionValueDigest(confirmation.value) !== inspection.data.inspectionValueDigest
+        ) {
+          const result = await apply("StoppedForCause", { reason: "roadmap_base_reconciliation_unverified" });
+          if (result !== null) return result;
+          continue;
+        }
+        const proofs: CommitReachabilityProof[] = Object.entries(inspection.data.completedStepReachability)
           .map(([commitSha, reachableFromOriginMain]) => ({ commitSha, reachableFromOriginMain }));
-        const selection = selectNextRoadmapItem(roadmap, request.intent, inspection.value.originMainSha, proofs);
+        const selection = selectNextRoadmapItem(
+          roadmap,
+          request.intent,
+          inspection.data.originMainSha,
+          proofs,
+          inspection.data.baseReconciliationProof ?? null,
+        );
         if (selection.kind === "completed") {
           const result = await apply("RunCompleted");
           if (result !== null) return result;
@@ -370,6 +426,8 @@ export class AttendedOrchestrationController {
           stepId: selection.item.stepId,
           routingDecision: route.decision,
           successCriteria,
+          baseReconciliation: selection.baseReconciliation,
+          expectedBaseMergeSha: selection.item.expectedBaseMergeSha,
         });
         if (result !== null) return result;
         continue;
@@ -378,6 +436,9 @@ export class AttendedOrchestrationController {
         if (request.adapters.contractNegotiator === undefined) {
           return this.boundary(snapshot, "adapter_unavailable", "contractNegotiator", transitionsApplied);
         }
+        const item = roadmap.items.find((candidate) => candidate.stepId === snapshot.currentStepId);
+        if (item === undefined) throw new ControllerInvariantError("persisted selected step is absent from the bound roadmap");
+        this.validatedStepSelection(events, item, snapshot);
         if (transitionsApplied + 2 > maxTransitions) {
           return this.boundary(snapshot, "transition_budget_exhausted", "a Claude dispatch and its response require two remaining transitions", transitionsApplied);
         }
@@ -412,8 +473,7 @@ export class AttendedOrchestrationController {
         const item = roadmap.items.find((candidate) => candidate.stepId === snapshot.currentStepId);
         if (item === undefined || snapshot.routingDecision === null) throw new ControllerInvariantError("selected roadmap item or route is missing");
         const proposal = this.lastProposal(events, item.stepId);
-        const selection = this.stepSelection(events, item.stepId);
-        if (selection === null) throw new ControllerInvariantError("persisted step selection is missing success criteria");
+        const selection = this.validatedStepSelection(events, item, snapshot);
         const allowedPaths = proposal?.allowedPaths ?? item.allowedPaths;
         const successCriteria = proposal?.successCriteria ?? selection.successCriteria;
         let negotiation;
@@ -430,6 +490,7 @@ export class AttendedOrchestrationController {
             roundNumber: snapshot.claudeRoundsConsumed[item.stepId] ?? 1,
             priorRoundsSummary: proposal?.rationale ?? "",
             routingDecision: snapshot.routingDecision,
+            baseReconciliation: selection.baseReconciliation ?? null,
           });
         } catch {
           const result = await apply("StoppedForCause", { reason: "adapter_error" });
@@ -505,5 +566,34 @@ export class AttendedOrchestrationController {
       if (parsed.success && parsed.data.stepId === stepId) return parsed.data;
     }
     return null;
+  }
+
+  private validatedStepSelection(
+    events: readonly { readonly kind: string; readonly payload: Readonly<Record<string, unknown>> }[],
+    item: RoadmapItemV1,
+    snapshot: OrchestrationSnapshotV1,
+  ): z.infer<typeof StepSelectionPayloadSchema> {
+    const selection = this.stepSelection(events, item.stepId);
+    if (selection === null) throw new ControllerInvariantError("persisted step selection is missing success criteria");
+    if (selection.expectedBaseMergeSha === undefined) {
+      if (
+        snapshot.inspectionBaseReconciliation !== undefined ||
+        item.expectedBaseMergeSha !== snapshot.intent.baseRevision
+      ) {
+        throw new ControllerInvariantError("legacy step selection is not an exact-base selection");
+      }
+    } else if (selection.expectedBaseMergeSha !== item.expectedBaseMergeSha) {
+      throw new ControllerInvariantError("persisted step base differs from the bound roadmap item");
+    }
+    if (domainSeparatedDigest(
+      "agent-builder/orchestration/roadmap-base-reconciliation-binding/v1",
+      selection.baseReconciliation ?? null,
+    ) !== domainSeparatedDigest(
+      "agent-builder/orchestration/roadmap-base-reconciliation-binding/v1",
+      snapshot.baseReconciliation ?? null,
+    )) {
+      throw new ControllerInvariantError("persisted step reconciliation differs from the selected snapshot");
+    }
+    return selection;
   }
 }

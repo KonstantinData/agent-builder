@@ -12,4 +12,5 @@ export * from "./model-routing.js";
 export * from "./persistence.js";
 export * from "./reducer.js";
 export * from "./roadmap.js";
+export * from "./roadmap-reconciliation.js";
 export * from "./workflow-adapters.js";

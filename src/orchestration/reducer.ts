@@ -2,9 +2,11 @@ import { z } from "zod";
 import { domainSeparatedDigest } from "./canonical-json.js";
 import {
   DigestSchema,
+  GitShaSchema,
   IdentifierSchema,
   LockedStepContractV1Schema,
   ModelRoutingDecisionV1Schema,
+  RoadmapBaseReconciliationBindingV1Schema,
   Rfc3339InstantSchema,
   RunStartEvidenceV1Schema,
   RunIntentV1Schema,
@@ -14,6 +16,11 @@ import {
   type ModelRoutingDecisionV1,
   type RunIntentV1,
 } from "./contracts.js";
+import {
+  RoadmapBaseReconciliationProofV1Schema,
+  reconciliationBinding,
+  verifyRoadmapBaseReconciliationProofV1,
+} from "./roadmap-reconciliation.js";
 import { validateModelRoutingDecision } from "./model-routing.js";
 
 export const ORCHESTRATION_PHASES = [
@@ -61,6 +68,7 @@ export const STOP_REASONS = [
   "merge_readback_failed",
   "push_readback_failed",
   "roadmap_history_unverified",
+  "roadmap_base_reconciliation_unverified",
   "roadmap_zero_eligible",
   "roadmap_multiple_eligible",
   "roadmap_dependency_unmerged",
@@ -100,6 +108,8 @@ export const OrchestrationSnapshotV1Schema = z
     currentStepId: IdentifierSchema.nullable(),
     contract: LockedStepContractV1Schema.nullable(),
     routingDecision: ModelRoutingDecisionV1Schema.nullable(),
+    baseReconciliation: RoadmapBaseReconciliationBindingV1Schema.nullable().optional(),
+    inspectionBaseReconciliation: RoadmapBaseReconciliationBindingV1Schema.nullable().optional(),
     stepsConsumed: z.number().int().nonnegative(),
     claudeRoundsConsumed: z.record(z.string(), z.number().int().nonnegative()),
     sideEffectAttemptsConsumed: AttemptCountersSchema,
@@ -156,13 +166,29 @@ export type OrchestrationEventV1 = z.infer<typeof OrchestrationEventV1Schema>;
 export const RepositoryInspectionResultV1Schema = z
   .object({
     evidenceDigest: DigestSchema,
+    inspectionValueDigest: DigestSchema.optional(),
     originMainSha: z.string().regex(/^[0-9a-f]{40}$/),
     attendedLocal: z.literal(true),
     deploysOnMain: z.literal(false),
-    defaultBranchProtected: z.literal(true),
+    defaultBranchProtected: z.boolean(),
     roadmapHistoryVerified: z.literal(true),
+    completedStepReachability: z.record(GitShaSchema, z.boolean()).optional(),
+    baseReconciliationProof: RoadmapBaseReconciliationProofV1Schema.nullable().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((inspection, context) => {
+    if (
+      inspection.baseReconciliationProof !== null &&
+      inspection.baseReconciliationProof !== undefined &&
+      inspection.baseReconciliationProof.observedOriginMainSha !== inspection.originMainSha
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["baseReconciliationProof", "observedOriginMainSha"],
+        message: "reconciliation proof must bind the inspected origin/main",
+      });
+    }
+  });
 
 export const VerificationResultV1Schema = z
   .object({
@@ -410,16 +436,79 @@ export function reduceOrchestration(
     lastEventDigest: event.eventDigest,
   };
 
+  if (event.kind === "RepositoryInspected") {
+    const inspection = RepositoryInspectionResultV1Schema.parse(event.payload);
+    const { inspectionBaseReconciliation: _ignoredInspectionExpectation, ...withoutInspectionExpectation } = next;
+    if (inspection.baseReconciliationProof === undefined) {
+      next = withoutInspectionExpectation;
+    } else if (inspection.baseReconciliationProof === null) {
+      next = { ...next, inspectionBaseReconciliation: null };
+    } else {
+      if (!verifyRoadmapBaseReconciliationProofV1(inspection.baseReconciliationProof)) {
+        return stoppedSnapshot(snapshot, event, "roadmap_base_reconciliation_unverified");
+      }
+      next = {
+        ...next,
+        inspectionBaseReconciliation: reconciliationBinding(inspection.baseReconciliationProof),
+      };
+    }
+  }
+
   if (event.kind === "StepSelected") {
     if (snapshot.stepsConsumed >= snapshot.intent.maxSteps) {
       return stoppedSnapshot(snapshot, event, "intent_budget_exhausted");
     }
     const stepId = IdentifierSchema.safeParse(event.payload["stepId"]);
     const route = ModelRoutingDecisionV1Schema.safeParse(event.payload["routingDecision"]);
-    if (!stepId.success || !route.success || !validateModelRoutingDecision(route.data, snapshot.intent.allowDegradedModelFallback)) {
+    const baseReconciliation = RoadmapBaseReconciliationBindingV1Schema.nullable().safeParse(
+      event.payload["baseReconciliation"] ?? null,
+    );
+    const expectedBaseMergeSha = GitShaSchema.optional().safeParse(event.payload["expectedBaseMergeSha"]);
+    if (
+      !stepId.success || !route.success || !baseReconciliation.success || !expectedBaseMergeSha.success ||
+      !validateModelRoutingDecision(route.data, snapshot.intent.allowDegradedModelFallback)
+    ) {
       return stoppedSnapshot(snapshot, event, "model_route_policy_violation");
     }
-    next = { ...next, currentStepId: stepId.data, routingDecision: route.data, stepsConsumed: snapshot.stepsConsumed + 1 };
+    const expectedBinding = snapshot.inspectionBaseReconciliation;
+    const historicalExactBase =
+      expectedBaseMergeSha.data === undefined &&
+      snapshot.inspectionBaseReconciliation === undefined;
+    const exactBase = expectedBaseMergeSha.data === snapshot.intent.baseRevision;
+    const reconciledBindingMatches =
+      expectedBaseMergeSha.data !== undefined &&
+      expectedBinding !== undefined &&
+      expectedBinding !== null &&
+      expectedBinding.domainBaseSha === expectedBaseMergeSha.data &&
+      baseReconciliation.data !== null &&
+      domainSeparatedDigest(
+        "agent-builder/orchestration/roadmap-base-reconciliation-binding/v1",
+        expectedBinding,
+      ) === domainSeparatedDigest(
+        "agent-builder/orchestration/roadmap-base-reconciliation-binding/v1",
+        baseReconciliation.data,
+      );
+    if (
+      ((historicalExactBase || exactBase) && baseReconciliation.data !== null) ||
+      (!historicalExactBase && !exactBase && !reconciledBindingMatches)
+    ) {
+      return stoppedSnapshot(snapshot, event, "roadmap_base_reconciliation_unverified");
+    }
+    const { baseReconciliation: _ignoredBaseReconciliation, ...withoutBaseReconciliation } = next;
+    next = baseReconciliation.data === null
+      ? {
+          ...withoutBaseReconciliation,
+          currentStepId: stepId.data,
+          routingDecision: route.data,
+          stepsConsumed: snapshot.stepsConsumed + 1,
+        }
+      : {
+          ...next,
+          currentStepId: stepId.data,
+          routingDecision: route.data,
+          baseReconciliation: baseReconciliation.data,
+          stepsConsumed: snapshot.stepsConsumed + 1,
+        };
   }
   if (event.kind === "NegotiationOpened") {
     const stepId = snapshot.currentStepId;
@@ -442,6 +531,13 @@ export function reduceOrchestration(
       contract.data.stepId !== snapshot.currentStepId ||
       contract.data.baseRevision !== snapshot.intent.baseRevision ||
       contract.data.maxClaudeRounds !== snapshot.intent.maxClaudeRoundsPerStep ||
+      domainSeparatedDigest(
+        "agent-builder/orchestration/roadmap-base-reconciliation-binding/v1",
+        contract.data.baseReconciliation ?? null,
+      ) !== domainSeparatedDigest(
+        "agent-builder/orchestration/roadmap-base-reconciliation-binding/v1",
+        snapshot.baseReconciliation ?? null,
+      ) ||
       snapshot.routingDecision === null ||
       domainSeparatedDigest("agent-builder/orchestration/model-route/v1", contract.data.routingDecision) !==
         domainSeparatedDigest("agent-builder/orchestration/model-route/v1", snapshot.routingDecision)

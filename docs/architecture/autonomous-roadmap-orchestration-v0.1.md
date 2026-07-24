@@ -100,6 +100,13 @@ runner. Pending resume is readback-only, CI reads are
 bounded, cleanup is verification-only, and an unprotected default branch stops as
 `merge_authority_missing` before merge invocation.
 
+The [Roadmap Base Reconciliation Contract v0.1](roadmap-base-reconciliation-v0.1.md)
+keeps a domain item's immutable base anchor while allowing only a digest-valid, bounded,
+gap-free chain of verified transparent governance PRs to reach the exact observed
+`origin/main`. Repository inspection persists the complete proof once, and step
+selection plus the locked contract bind its digest. This does not implement Step 16 or
+real host runners.
+
 ### Claude host activation
 
 The concrete `ClaudeCliNegotiator` is usable only with host-supplied configuration:
@@ -130,6 +137,11 @@ verified ancestors of the current `origin/main`, whose expected base exactly mat
 whose change class is allowed by the run intent, and whose effects are explicitly
 `reduce_or_preserve` and `none` for capability and deployment. Unknown effects,
 human-decision flags, zero candidates while work remains, or multiple candidates stop.
+
+When governance-only PRs intervene after a domain item's anchor, exact equality may be
+reconciled only under the explicit `roadmap-base-reconciliation/1` policy. Missing,
+malformed, stale, non-PR, non-transparent, unverified, excessive, or non-gap-free proof
+stops as `roadmap_base_reconciliation_unverified`; unchecked ancestry is never enough.
 
 Declared and actual paths must stay within the locked scope. `.github`, dependency
 manifests and lockfiles, secrets and key files, deployment/release configuration,

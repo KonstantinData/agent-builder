@@ -24,6 +24,7 @@ const request: ClaudeNegotiationRequestV1 = {
   roundNumber: 1,
   priorRoundsSummary: "",
   routingDecision: terraRoute,
+  baseReconciliation: null,
 };
 
 function negotiator(output: unknown) {
