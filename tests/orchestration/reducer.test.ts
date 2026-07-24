@@ -8,15 +8,29 @@ import {
   type OrchestrationSnapshotV1,
 } from "../../src/orchestration/reducer.js";
 import { BASE_SHA, terraRoute, testContract, testIntent } from "./support.js";
+import {
+  createRoadmapBaseReconciliationProofV1,
+  reconciliationBinding,
+  RECONCILIATION_WORKFLOW_SAFETY_MANIFEST_DIGEST,
+  ROADMAP_RECONCILIATION_POLICY_DIGEST,
+} from "../../src/orchestration/roadmap-reconciliation.js";
+import { bootstrapReconciliationProof, PR18_MERGE_SHA } from "./reconciliation-support.js";
 
 const defaultPayloads: Partial<Record<OrchestrationEventKind, Record<string, unknown>>> = {
   RepositoryInspected: {
     evidenceDigest: "a".repeat(64),
+    inspectionValueDigest: "b".repeat(64),
     originMainSha: BASE_SHA,
     attendedLocal: true,
     deploysOnMain: false,
     defaultBranchProtected: true,
     roadmapHistoryVerified: true,
+    completedStepReachability: { [BASE_SHA]: true },
+    baseReconciliationProof: null,
+  },
+  StepSelected: {
+    baseReconciliation: null,
+    expectedBaseMergeSha: BASE_SHA,
   },
   VerificationPassed: {
     typecheckPassed: true,
@@ -153,6 +167,134 @@ describe("bounded orchestration reducer", () => {
   it("uses stable explicit stop precedence", () => {
     expect(stopReasonPrecedence("corruption_detected")).toBeLessThan(stopReasonPrecedence("intent_missing"));
     expect(stopReasonPrecedence("model_route_unavailable")).toBeLessThan(stopReasonPrecedence("contract_conflict"));
+  });
+
+  it("binds StepSelected directly to the persisted reconciliation proof identity", () => {
+    const proof = bootstrapReconciliationProof();
+    const initial = createVerifiedRunSnapshot(
+      "run-reconciled-001",
+      testIntent({ baseRevision: PR18_MERGE_SHA }),
+    );
+    const inspected = reduceOrchestration(initial, createOrchestrationEvent({
+      eventId: "event-reconciled-inspection",
+      runId: initial.runId,
+      sequence: 1,
+      observedAt: "2026-07-24T10:00:00Z",
+      kind: "RepositoryInspected",
+      payload: {
+        evidenceDigest: "a".repeat(64),
+        inspectionValueDigest: "b".repeat(64),
+        originMainSha: PR18_MERGE_SHA,
+        attendedLocal: true,
+        deploysOnMain: false,
+        defaultBranchProtected: false,
+        roadmapHistoryVerified: true,
+        completedStepReachability: { [BASE_SHA]: true },
+        baseReconciliationProof: proof,
+      },
+      previousEventDigest: null,
+    }));
+    expect(inspected.inspectionBaseReconciliation).toEqual(reconciliationBinding(proof));
+
+    const select = (baseReconciliation: unknown) => reduceOrchestration(inspected, createOrchestrationEvent({
+      eventId: `event-reconciled-selection-${String(baseReconciliation === null)}`,
+      runId: inspected.runId,
+      sequence: 2,
+      observedAt: "2026-07-24T10:01:00Z",
+      kind: "StepSelected",
+      payload: {
+        stepId: "step-16",
+        routingDecision: terraRoute,
+        baseReconciliation,
+        expectedBaseMergeSha: BASE_SHA,
+      },
+      previousEventDigest: inspected.lastEventDigest,
+    }));
+    expect(select(null)).toMatchObject({
+      phase: "stopped",
+      stopReason: "roadmap_base_reconciliation_unverified",
+    });
+    expect(reduceOrchestration(inspected, createOrchestrationEvent({
+      eventId: "event-reconciled-selection-missing-new-fields",
+      runId: inspected.runId,
+      sequence: 2,
+      observedAt: "2026-07-24T10:01:00Z",
+      kind: "StepSelected",
+      payload: { stepId: "step-16", routingDecision: terraRoute },
+      previousEventDigest: inspected.lastEventDigest,
+    }))).toMatchObject({
+      phase: "stopped",
+      stopReason: "roadmap_base_reconciliation_unverified",
+    });
+    expect(select({ ...reconciliationBinding(proof), proofDigest: "0".repeat(64) })).toMatchObject({
+      phase: "stopped",
+      stopReason: "roadmap_base_reconciliation_unverified",
+    });
+    expect(select(reconciliationBinding(proof))).toMatchObject({
+      phase: "step_selected",
+      baseReconciliation: { proofDigest: proof.proofDigest },
+    });
+
+    const superfluousProof = createRoadmapBaseReconciliationProofV1({
+      schemaVersion: "roadmap-base-reconciliation-proof/1",
+      policyDigest: ROADMAP_RECONCILIATION_POLICY_DIGEST,
+      domainBaseSha: "0".repeat(40),
+      observedOriginMainSha: BASE_SHA,
+      commits: [{
+        schemaVersion: "transparent-meta-commit-proof/1",
+        source: "github_pull_request",
+        mergeMethod: "squash",
+        parentSha: "0".repeat(40),
+        mergeCommitSha: BASE_SHA,
+        mergeCommitReachableFromOriginMain: true,
+        mergeCommitTreeMatchesPullRequestHead: true,
+        pullRequestNumber: 99,
+        pullRequestHeadSha: "1".repeat(40),
+        pullRequestState: "merged",
+        mergedAt: "2026-07-24T09:00:00Z",
+        requiredCheck: { name: "verify", headSha: "1".repeat(40), conclusion: "success" },
+        workflowSafetyManifestDigest: RECONCILIATION_WORKFLOW_SAFETY_MANIFEST_DIGEST,
+        changedPaths: ["README.md"],
+        capabilityEffect: "reduce_or_preserve",
+        deploymentEffect: "none",
+      }],
+    });
+    const exactInitial = createVerifiedRunSnapshot("run-exact-with-proof", testIntent());
+    const exactInspected = reduceOrchestration(exactInitial, createOrchestrationEvent({
+      eventId: "event-exact-inspection",
+      runId: exactInitial.runId,
+      sequence: 1,
+      observedAt: "2026-07-24T10:00:00Z",
+      kind: "RepositoryInspected",
+      payload: {
+        evidenceDigest: "a".repeat(64),
+        inspectionValueDigest: "b".repeat(64),
+        originMainSha: BASE_SHA,
+        attendedLocal: true,
+        deploysOnMain: false,
+        defaultBranchProtected: true,
+        roadmapHistoryVerified: true,
+        completedStepReachability: { [BASE_SHA]: true },
+        baseReconciliationProof: superfluousProof,
+      },
+      previousEventDigest: null,
+    }));
+    const exactSelected = reduceOrchestration(exactInspected, createOrchestrationEvent({
+      eventId: "event-exact-selection",
+      runId: exactInitial.runId,
+      sequence: 2,
+      observedAt: "2026-07-24T10:01:00Z",
+      kind: "StepSelected",
+      payload: {
+        stepId: "step-16",
+        routingDecision: terraRoute,
+        baseReconciliation: null,
+        expectedBaseMergeSha: BASE_SHA,
+      },
+      previousEventDigest: exactInspected.lastEventDigest,
+    }));
+    expect(exactSelected).toMatchObject({ phase: "step_selected" });
+    expect(exactSelected.baseReconciliation ?? null).toBeNull();
   });
 
   it("requires strict verification and merge-gate evidence", () => {

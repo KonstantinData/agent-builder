@@ -9,6 +9,7 @@ import {
   IdentifierSchema,
   LockedStepContractV1Schema,
   ModelRoutingDecisionV1Schema,
+  RoadmapBaseReconciliationBindingV1Schema,
   computeLockedContractDigest,
   type LockedStepContractV1,
   type ModelRoutingDecisionV1,
@@ -27,6 +28,7 @@ export const ClaudeNegotiationRequestV1Schema = z
     roundNumber: z.number().int().min(1).max(4),
     priorRoundsSummary: z.string().max(8_000),
     routingDecision: ModelRoutingDecisionV1Schema,
+    baseReconciliation: RoadmapBaseReconciliationBindingV1Schema.nullable(),
   })
   .strict();
 export type ClaudeNegotiationRequestV1 = z.infer<typeof ClaudeNegotiationRequestV1Schema>;
@@ -168,6 +170,7 @@ export class ClaudeCliNegotiator {
         contract.runId !== request.runId ||
         contract.stepId !== request.stepId ||
         contract.baseRevision !== request.baseRevision ||
+        canonicalJson(contract.baseReconciliation ?? null) !== canonicalJson(request.baseReconciliation) ||
         !scopeIsSubset(contract.allowedPaths, request.allowedPaths) ||
         canonicalJson(contract.routingDecision) !== canonicalJson(route) ||
         contract.contractDigest !== computeLockedContractDigest((({ contractDigest: _ignored, ...value }) => value)(contract))

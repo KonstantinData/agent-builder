@@ -4,18 +4,21 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { canonicalJson } from "../../src/orchestration/canonical-json.js";
 import { FileOrchestrationStore, OrchestrationPersistenceError } from "../../src/orchestration/persistence.js";
-import { createOrchestrationEvent, createVerifiedRunSnapshot } from "../../src/orchestration/reducer.js";
+import { createOrchestrationEvent, createVerifiedRunSnapshot, reduceOrchestration } from "../../src/orchestration/reducer.js";
 import { testIntent } from "./support.js";
 import { BASE_SHA } from "./support.js";
 
 const directories: string[] = [];
 const inspectionPayload = {
   evidenceDigest: "a".repeat(64),
+  inspectionValueDigest: "b".repeat(64),
   originMainSha: BASE_SHA,
   attendedLocal: true,
   deploysOnMain: false,
   defaultBranchProtected: true,
   roadmapHistoryVerified: true,
+  completedStepReachability: { [BASE_SHA]: true },
+  baseReconciliationProof: null,
 };
 
 afterEach(async () => {
@@ -84,5 +87,34 @@ describe("file orchestration persistence", () => {
     const conflicting = createOrchestrationEvent({ ...event, observedAt: "2026-07-24T10:01:00Z" });
     await writeFile(join(directory, "events.jsonl"), `${canonicalJson(event)}\n${canonicalJson(conflicting)}\n`, "utf8");
     await expect(store.load()).rejects.toBeInstanceOf(OrchestrationPersistenceError);
+  });
+
+  it("replays pre-reconciliation v1 snapshots and events without rehashing them as corruption", async () => {
+    const { directory, store } = await temporaryStore();
+    const initial = createVerifiedRunSnapshot("run-legacy-001", testIntent());
+    expect("baseReconciliation" in initial).toBe(false);
+    const legacyEvent = createOrchestrationEvent({
+      eventId: "event-legacy-001",
+      runId: initial.runId,
+      sequence: 1,
+      observedAt: "2026-07-24T10:00:00Z",
+      kind: "RepositoryInspected",
+      payload: {
+        evidenceDigest: "a".repeat(64),
+        originMainSha: BASE_SHA,
+        attendedLocal: true,
+        deploysOnMain: false,
+        defaultBranchProtected: true,
+        roadmapHistoryVerified: true,
+      },
+      previousEventDigest: null,
+    });
+    const legacySnapshot = reduceOrchestration(initial, legacyEvent);
+    expect(legacySnapshot).toMatchObject({ phase: "repository_inspected", lastSequence: 1 });
+    expect("baseReconciliation" in legacySnapshot).toBe(false);
+    await writeFile(join(directory, "snapshot.json"), `${canonicalJson(legacySnapshot)}\n`, "utf8");
+    await writeFile(join(directory, "events.jsonl"), `${canonicalJson(legacyEvent)}\n`, "utf8");
+
+    await expect(store.load()).resolves.toEqual(legacySnapshot);
   });
 });

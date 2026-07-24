@@ -15,6 +15,11 @@ extends the persisted composition through `step_complete` using strict injected-
 contracts and deterministic fakes. Its real pinned Claude CLI adapter negotiates the v2
 contract, but it ships no real Git, GitHub, or verification subprocess runner; an
 unprotected default branch blocks merge as `merge_authority_missing` without bypass.
+The Claude-locked
+[`Roadmap Base Reconciliation Contract v0.1`](docs/architecture/roadmap-base-reconciliation-v0.1.md)
+adds a bounded, digest-bound transparent-governance chain proof so a later domain step
+can retain its immutable roadmap anchor while binding execution to the exact current
+`origin/main`. It does not implement Step 16 or real host runners.
 Its job is not to execute agents directly. It turns builder intent into validated,
 versioned agent specifications, evaluates them against policy, and produces auditable
 approval decisions without deploying or executing the resulting agents.

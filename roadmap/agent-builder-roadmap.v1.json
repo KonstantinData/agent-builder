@@ -1,5 +1,6 @@
 {
   "schemaVersion": "agent-builder-roadmap/1",
+  "reconciliationPolicyVersion": "roadmap-base-reconciliation/1",
   "items": [
     {
       "schemaVersion": "roadmap-item/1",

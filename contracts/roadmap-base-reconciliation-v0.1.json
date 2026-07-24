@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "roadmap-base-reconciliation-contract/1",
+  "contractVersion": "0.1",
+  "baseRevision": "aeec5a84d0dd3ae16bfad39b81cc74291be0002f",
+  "lockedStepContractDigest": "9dbecc775f5b6b368e08dbb77c023367ac2b92753ba9446ff2cf728b19281614",
+  "policy": {
+    "schemaVersion": "roadmap-base-reconciliation/1",
+    "policyDigest": "a50d8a852a69c35d4313a5246f6689ee8cb4403332c5828e4b54cf5196f39d49",
+    "maxTransparentMetaCommits": 4,
+    "requiredCheck": "verify",
+    "workflowSafetyManifestDigest": "cf76aa31ea735049165136709028f69e07c82b80c1ee3eb40a0078ef61e8553d",
+    "requiredMergeSource": "github_pull_request",
+    "requiredMergeMethod": "squash",
+    "capabilityEffect": "reduce_or_preserve",
+    "deploymentEffect": "none"
+  },
+  "allowedTransparentPaths": [
+    ".gitignore",
+    "README.md",
+    "contracts/",
+    "docs/architecture/",
+    "roadmap/",
+    "src/orchestration/",
+    "tests/orchestration/"
+  ],
+  "forbiddenTransparentSurfaces": [
+    ".env",
+    ".github/",
+    ".key",
+    ".pem",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pyproject.toml",
+    "secrets",
+    "src/assembler/",
+    "src/deployment/",
+    "src/gate/",
+    "src/harness/",
+    "src/invariants/",
+    "src/runtime/",
+    "src/schema/",
+    "uv.lock"
+  ],
+  "selectionPolicy": {
+    "exactBaseStillAllowed": true,
+    "reconciledBaseRequiresDigestValidProof": true,
+    "chainMustStartAtCandidateDomainBase": true,
+    "chainMustEndAtObservedOriginMain": true,
+    "chainMustBeOrderedGapFreeAndUnique": true,
+    "lockedContractBindsProofDigestAndObservedOriginMain": true,
+    "headDriftOutcome": "roadmap_base_reconciliation_unverified",
+    "unknownStateBehavior": "fail_closed"
+  },
+  "bootstrapEvidence": [
+    {
+      "pullRequestNumber": 17,
+      "pullRequestHeadSha": "66cd6f414a88b82b0a75e395d3a8dfaa33f744db",
+      "parentSha": "b3244c73ca79c68dbba3b4a05234f93d3ed92752",
+      "mergeCommitSha": "ce8c4ba614347f408715cdb3fe0dfc1ce128466a",
+      "requiredCheck": "verify",
+      "requiredCheckConclusion": "success"
+    },
+    {
+      "pullRequestNumber": 18,
+      "pullRequestHeadSha": "cbc3240ec454c3dcc1b869e42a528936d236eff2",
+      "parentSha": "ce8c4ba614347f408715cdb3fe0dfc1ce128466a",
+      "mergeCommitSha": "aeec5a84d0dd3ae16bfad39b81cc74291be0002f",
+      "requiredCheck": "verify",
+      "requiredCheckConclusion": "success"
+    }
+  ],
+  "includedImplementation": [
+    "strict_reconciliation_proof_schema",
+    "bounded_gap_free_chain_validation",
+    "transparent_path_policy",
+    "persisted_repository_inspection_proof",
+    "locked_contract_proof_binding",
+    "deterministic_fail_closed_selection"
+  ],
+  "excludedImplementation": [
+    "step_16_runtime_implementation",
+    "real_repository_inspector",
+    "real_verification_subprocess_runner",
+    "real_git_runner",
+    "real_github_runner",
+    "credential_or_token_custody",
+    "branch_protection_bypass",
+    "merge_bypass"
+  ],
+  "contractDigest": "84e17c0488f98a08b08977f915f9f17a9ad3cc128465f124f8a87c570f03cc38"
+}

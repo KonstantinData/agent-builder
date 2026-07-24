@@ -6,6 +6,15 @@ export const DigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
 export const Rfc3339InstantSchema = z.string().datetime({ offset: true });
 export const IdentifierSchema = z.string().min(1).max(160).regex(/^[a-zA-Z0-9._:/-]+$/);
 
+export const RoadmapBaseReconciliationBindingV1Schema = z.object({
+  schemaVersion: z.literal("roadmap-base-reconciliation-binding/1"),
+  policyDigest: DigestSchema,
+  domainBaseSha: GitShaSchema,
+  observedOriginMainSha: GitShaSchema,
+  proofDigest: DigestSchema,
+}).strict();
+export type RoadmapBaseReconciliationBindingV1 = z.infer<typeof RoadmapBaseReconciliationBindingV1Schema>;
+
 export const ChangeClassSchema = z.enum([
   "docs",
   "refactor",
@@ -183,6 +192,7 @@ export type RoadmapItemV1 = z.infer<typeof RoadmapItemV1Schema>;
 export const RoadmapV1Schema = z
   .object({
     schemaVersion: z.literal("agent-builder-roadmap/1"),
+    reconciliationPolicyVersion: z.literal("roadmap-base-reconciliation/1").optional(),
     items: z.array(RoadmapItemV1Schema).min(1),
   })
   .strict();
@@ -202,6 +212,7 @@ export const LockedStepContractV1Schema = z
     successCriteria: z.array(z.string().min(1)).min(1),
     maxClaudeRounds: z.number().int().min(1).max(4),
     routingDecision: ModelRoutingDecisionV1Schema,
+    baseReconciliation: RoadmapBaseReconciliationBindingV1Schema.nullable().optional(),
     controllerAddendum: z
       .object({
         schemaVersion: z.literal("attended-orchestration-controller/1"),

@@ -5,6 +5,7 @@ import type {
   RoadmapV1,
   RunIntentV1,
 } from "./contracts.js";
+import type { RoadmapBaseReconciliationProofV1 } from "./roadmap-reconciliation.js";
 import { domainSeparatedDigest } from "./canonical-json.js";
 import type {
   ClaudeNegotiationRequestV1,
@@ -56,6 +57,7 @@ export interface RepositoryInspector {
     readonly originMainSha: string;
     readonly attendedLocal: boolean;
     readonly completedStepReachability: Readonly<Record<string, boolean>>;
+    readonly baseReconciliationProof?: RoadmapBaseReconciliationProofV1 | null;
     readonly deploysOnMain: boolean;
     readonly defaultBranchProtected: boolean;
   }>>;

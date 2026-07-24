@@ -6,6 +6,7 @@ import {
   createEvidenceEnvelope,
   type RunAdapters,
 } from "../../src/orchestration/adapters.js";
+import { domainSeparatedDigest } from "../../src/orchestration/canonical-json.js";
 import {
   AttendedOrchestrationController,
   ControllerInvariantError,
@@ -18,8 +19,10 @@ import {
   type RoadmapV1,
 } from "../../src/orchestration/contracts.js";
 import { FileOrchestrationStore } from "../../src/orchestration/persistence.js";
-import { createOrchestrationEvent } from "../../src/orchestration/reducer.js";
-import { BASE_SHA, testIntent } from "./support.js";
+import { reconciliationBinding } from "../../src/orchestration/roadmap-reconciliation.js";
+import { createOrchestrationEvent, createVerifiedRunSnapshot } from "../../src/orchestration/reducer.js";
+import { BASE_SHA, terraRoute, testIntent } from "./support.js";
+import { bootstrapReconciliationProof, PR18_MERGE_SHA } from "./reconciliation-support.js";
 
 const directories: string[] = [];
 
@@ -92,6 +95,7 @@ async function adapters(
           successCriteria: request.successCriteria,
           maxClaudeRounds: 4,
           routingDecision: request.routingDecision,
+          baseReconciliation: request.baseReconciliation,
         };
         const contract: LockedStepContractV1 = {
           ...payload,
@@ -179,6 +183,79 @@ describe("attended orchestration controller", () => {
     ));
     expect(result).toMatchObject({ kind: "start_rejected", reason: "attestation_missing", persisted: false });
     expect(await store.hasSnapshot()).toBe(false);
+  });
+
+  it("persists and reuses the exact reconciliation proof without requiring branch protection before selection", async () => {
+    const roadmap = await loadRoadmap();
+    const proof = bootstrapReconciliationProof();
+    const configured = await adapters(roadmap, {
+      repositoryInspector: {
+        inspect: async () => createEvidenceEnvelope("test-repository", "2026-07-24T10:00:00Z", {
+          originMainSha: PR18_MERGE_SHA,
+          attendedLocal: true,
+          completedStepReachability: Object.fromEntries(
+            roadmap.items.filter((item) => item.mergeCommitSha !== null).map((item) => [item.mergeCommitSha!, true]),
+          ),
+          baseReconciliationProof: proof,
+          deploysOnMain: false,
+          defaultBranchProtected: false,
+        }),
+      },
+    });
+    const store = await newStore();
+    const reconciledRequest = {
+      ...request(store, roadmap, configured),
+      intent: testIntent({ baseRevision: PR18_MERGE_SHA }),
+    };
+    const result = await new AttendedOrchestrationController().runUntilBoundary(reconciledRequest);
+    expect(result).toMatchObject({ phase: "contract_locked", reason: "awaiting_external_implementation" });
+    const snapshot = await store.load();
+    expect(snapshot.baseReconciliation).toMatchObject({
+      observedOriginMainSha: PR18_MERGE_SHA,
+      proofDigest: proof.proofDigest,
+    });
+    expect(snapshot.contract?.baseRevision).toBe(PR18_MERGE_SHA);
+    expect(snapshot.contract?.baseReconciliation).toEqual(snapshot.baseReconciliation);
+    const inspectionEvent = (await store.loadEvents()).find((event) => event.kind === "RepositoryInspected");
+    expect(inspectionEvent?.payload).toMatchObject({
+      defaultBranchProtected: false,
+      baseReconciliationProof: { proofDigest: proof.proofDigest },
+    });
+  });
+
+  it("stops if origin/main or reconciliation evidence drifts after the persisted inspection", async () => {
+    const roadmap = await loadRoadmap();
+    const proof = bootstrapReconciliationProof();
+    let reads = 0;
+    const configured = await adapters(roadmap, {
+      repositoryInspector: {
+        inspect: async () => {
+          reads += 1;
+          return createEvidenceEnvelope("test-repository", `2026-07-24T10:0${reads}:00Z`, {
+            originMainSha: reads === 1 ? PR18_MERGE_SHA : "f".repeat(40),
+            attendedLocal: true,
+            completedStepReachability: Object.fromEntries(
+              roadmap.items.filter((item) => item.mergeCommitSha !== null).map((item) => [item.mergeCommitSha!, true]),
+            ),
+            baseReconciliationProof: proof,
+            deploysOnMain: false,
+            defaultBranchProtected: false,
+          });
+        },
+      },
+    });
+    const store = await newStore();
+    const result = await new AttendedOrchestrationController().runUntilBoundary({
+      ...request(store, roadmap, configured),
+      intent: testIntent({ baseRevision: PR18_MERGE_SHA }),
+    });
+    expect(result).toMatchObject({
+      kind: "stopped",
+      cause: "adapter_rejected",
+      detail: "roadmap_base_reconciliation_unverified",
+    });
+    expect(reads).toBe(2);
+    expect((await store.load()).phase).toBe("stopped");
   });
 
   it("enforces the per-invocation transition budget without extending the run intent", async () => {
@@ -285,5 +362,119 @@ describe("attended orchestration controller", () => {
       snapshotDigest: dispatched.snapshotDigest,
     });
     expect((await store.loadEvents())).toHaveLength(3);
+  });
+
+  it("resumes a legacy exact-base StepSelected event that predates reconciliation fields", async () => {
+    const roadmap = await loadRoadmap();
+    const store = await newStore();
+    const initial = createVerifiedRunSnapshot("run-controller-001", testIntent(), {
+      schemaVersion: "run-start-evidence/1",
+      environmentAttestationDigest: "a".repeat(64),
+      environmentObservedAt: "2026-07-24T10:00:00Z",
+      intentVerificationDigest: "b".repeat(64),
+      intentVerificationObservedAt: "2026-07-24T10:00:00Z",
+      roadmapDigest: domainSeparatedDigest("agent-builder/orchestration/roadmap/v1", roadmap),
+    });
+    await store.initialize(initial);
+    const inspectedEvent = createOrchestrationEvent({
+      eventId: "event:run-controller-001:1:RepositoryInspected",
+      runId: initial.runId,
+      sequence: 1,
+      observedAt: "2026-07-24T10:01:00Z",
+      kind: "RepositoryInspected",
+      payload: {
+        evidenceDigest: "a".repeat(64),
+        originMainSha: BASE_SHA,
+        attendedLocal: true,
+        deploysOnMain: false,
+        defaultBranchProtected: true,
+        roadmapHistoryVerified: true,
+      },
+      previousEventDigest: null,
+    });
+    const inspected = await store.append(initial, inspectedEvent);
+    const selectedEvent = createOrchestrationEvent({
+      eventId: "event:run-controller-001:2:StepSelected",
+      runId: initial.runId,
+      sequence: 2,
+      observedAt: "2026-07-24T10:02:00Z",
+      kind: "StepSelected",
+      payload: {
+        stepId: "step-16",
+        routingDecision: terraRoute,
+        successCriteria: ["pnpm typecheck", "pnpm test"],
+      },
+      previousEventDigest: inspected.lastEventDigest,
+    });
+    await store.append(inspected, selectedEvent);
+
+    const result = await new AttendedOrchestrationController().runUntilBoundary(
+      request(store, roadmap, await adapters(roadmap)),
+    );
+    expect(result).toMatchObject({
+      kind: "boundary",
+      phase: "contract_locked",
+      reason: "awaiting_external_implementation",
+    });
+    expect((await store.load()).contract?.baseReconciliation ?? null).toBeNull();
+  });
+
+  it("rejects a rehashed StepSelected base claim before persisting a Claude dispatch", async () => {
+    const roadmap = await loadRoadmap();
+    const proof = bootstrapReconciliationProof();
+    const intent = testIntent({ baseRevision: PR18_MERGE_SHA });
+    const store = await newStore();
+    const initial = createVerifiedRunSnapshot("run-controller-001", intent, {
+      schemaVersion: "run-start-evidence/1",
+      environmentAttestationDigest: "a".repeat(64),
+      environmentObservedAt: "2026-07-24T10:00:00Z",
+      intentVerificationDigest: "b".repeat(64),
+      intentVerificationObservedAt: "2026-07-24T10:00:00Z",
+      roadmapDigest: domainSeparatedDigest("agent-builder/orchestration/roadmap/v1", roadmap),
+    });
+    await store.initialize(initial);
+    const inspected = await store.append(initial, createOrchestrationEvent({
+      eventId: "event:run-controller-001:1:RepositoryInspected",
+      runId: initial.runId,
+      sequence: 1,
+      observedAt: "2026-07-24T10:01:00Z",
+      kind: "RepositoryInspected",
+      payload: {
+        evidenceDigest: "a".repeat(64),
+        inspectionValueDigest: "b".repeat(64),
+        originMainSha: PR18_MERGE_SHA,
+        attendedLocal: true,
+        deploysOnMain: false,
+        defaultBranchProtected: false,
+        roadmapHistoryVerified: true,
+        completedStepReachability: { [BASE_SHA]: true },
+        baseReconciliationProof: proof,
+      },
+      previousEventDigest: null,
+    }));
+    await store.append(inspected, createOrchestrationEvent({
+      eventId: "event:run-controller-001:2:StepSelected",
+      runId: initial.runId,
+      sequence: 2,
+      observedAt: "2026-07-24T10:02:00Z",
+      kind: "StepSelected",
+      payload: {
+        stepId: "step-01",
+        routingDecision: terraRoute,
+        successCriteria: ["pnpm typecheck", "pnpm test"],
+        baseReconciliation: reconciliationBinding(proof),
+        expectedBaseMergeSha: BASE_SHA,
+      },
+      previousEventDigest: inspected.lastEventDigest,
+    }));
+    const configured = await adapters(roadmap);
+    await expect(new AttendedOrchestrationController().runUntilBoundary({
+      ...request(store, roadmap, configured),
+      intent,
+    })).rejects.toThrow("persisted step base differs from the bound roadmap item");
+    expect((await store.loadEvents()).map((event) => event.kind)).toEqual([
+      "RepositoryInspected",
+      "StepSelected",
+    ]);
   });
 });
