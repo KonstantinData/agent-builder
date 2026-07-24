@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { canonicalJson } from "./canonical-json.js";
 import {
@@ -54,40 +54,78 @@ async function appendDurably(path: string, value: string): Promise<void> {
 }
 
 export class FileOrchestrationStore {
+  readonly #directory: string;
   readonly #snapshotPath: string;
   readonly #eventsPath: string;
+  readonly #controllerLockPath: string;
 
   public constructor(directory: string) {
+    this.#directory = directory;
     this.#snapshotPath = join(directory, "snapshot.json");
     this.#eventsPath = join(directory, "events.jsonl");
+    this.#controllerLockPath = join(directory, ".controller.lock");
+  }
+
+  public async hasSnapshot(): Promise<boolean> {
+    return await pathExists(this.#snapshotPath);
+  }
+
+  public async acquireControllerLock(): Promise<(() => Promise<void>) | null> {
+    await mkdir(this.#directory, { recursive: true });
+    let handle;
+    try {
+      handle = await open(this.#controllerLockPath, "wx");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+      throw error;
+    }
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      await handle.close();
+      await unlink(this.#controllerLockPath);
+    };
+  }
+
+  public async loadEvents(): Promise<readonly OrchestrationEventV1[]> {
+    if (!(await pathExists(this.#eventsPath))) return [];
+    const text = await readFile(this.#eventsPath, "utf8");
+    return text
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0)
+      .map((line) => OrchestrationEventV1Schema.parse(JSON.parse(line)));
   }
 
   public async initialize(snapshotInput: OrchestrationSnapshotV1): Promise<void> {
     const snapshot = OrchestrationSnapshotV1Schema.parse(snapshotInput);
-    if (await pathExists(this.#snapshotPath)) {
+    await mkdir(this.#directory, { recursive: true });
+    let handle;
+    try {
+      handle = await open(this.#snapshotPath, "wx");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const existing = await this.load();
       if (existing.runId !== snapshot.runId || existing.intent.intentDigest !== snapshot.intent.intentDigest) {
         throw new OrchestrationPersistenceError("run state already exists for a different run or intent");
       }
       return;
     }
-    await atomicWrite(this.#snapshotPath, `${canonicalJson(snapshot)}\n`);
+    try {
+      await handle.writeFile(`${canonicalJson(snapshot)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   }
 
   public async load(): Promise<OrchestrationSnapshotV1> {
     const snapshot = OrchestrationSnapshotV1Schema.parse(
       JSON.parse(await readFile(this.#snapshotPath, "utf8")),
     );
-    let events: OrchestrationEventV1[] = [];
-    if (await pathExists(this.#eventsPath)) {
-      const text = await readFile(this.#eventsPath, "utf8");
-      events = text
-        .split(/\r?\n/)
-        .filter((line) => line.length > 0)
-        .map((line) => OrchestrationEventV1Schema.parse(JSON.parse(line)));
-    }
+    const events = await this.loadEvents();
     const eventIds = new Map<string, string>();
-    let replay = createVerifiedRunSnapshot(snapshot.runId, snapshot.intent);
+    let replay = createVerifiedRunSnapshot(snapshot.runId, snapshot.intent, snapshot.startEvidence);
     let snapshotAtRecordedSequence: OrchestrationSnapshotV1 | undefined = replay.lastSequence === snapshot.lastSequence ? replay : undefined;
     for (const event of events) {
       const priorDigest = eventIds.get(event.eventId);

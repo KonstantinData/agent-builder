@@ -10,6 +10,7 @@ import { BASE_SHA } from "./support.js";
 
 const directories: string[] = [];
 const inspectionPayload = {
+  evidenceDigest: "a".repeat(64),
   originMainSha: BASE_SHA,
   attendedLocal: true,
   deploysOnMain: false,

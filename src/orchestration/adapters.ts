@@ -5,12 +5,38 @@ import type {
   RoadmapV1,
   RunIntentV1,
 } from "./contracts.js";
+import { domainSeparatedDigest } from "./canonical-json.js";
+import type {
+  ClaudeNegotiationRequestV1,
+  ClaudeNegotiationResult,
+} from "./claude-cli-negotiator.js";
 
 export interface EvidenceEnvelope<T> {
   readonly producer: string;
   readonly observedAt: string;
   readonly evidenceDigest: string;
   readonly value: T;
+}
+
+export function createEvidenceEnvelope<T>(
+  producer: string,
+  observedAt: string,
+  value: T,
+): EvidenceEnvelope<T> {
+  const evidenceDigest = domainSeparatedDigest("agent-builder/orchestration/evidence/v1", {
+    producer,
+    observedAt,
+    value,
+  });
+  return { producer, observedAt, evidenceDigest, value };
+}
+
+export function verifyEvidenceEnvelope<T>(evidence: EvidenceEnvelope<T>): boolean {
+  return evidence.evidenceDigest === domainSeparatedDigest("agent-builder/orchestration/evidence/v1", {
+    producer: evidence.producer,
+    observedAt: evidence.observedAt,
+    value: evidence.value,
+  });
 }
 
 export interface RunIntentVerifier {
@@ -33,6 +59,10 @@ export interface RepositoryInspector {
     readonly deploysOnMain: boolean;
     readonly defaultBranchProtected: boolean;
   }>>;
+}
+
+export interface ContractNegotiator {
+  negotiate(request: ClaudeNegotiationRequestV1): Promise<ClaudeNegotiationResult>;
 }
 
 export interface ImplementationDriver {
@@ -92,6 +122,7 @@ export interface RunAdapters {
   readonly environmentAttestor?: EnvironmentAttestor;
   readonly runIntentVerifier?: RunIntentVerifier;
   readonly repositoryInspector?: RepositoryInspector;
+  readonly contractNegotiator?: ContractNegotiator;
   readonly implementationDriver?: ImplementationDriver;
   readonly verificationDriver?: VerificationDriver;
   readonly gitFeatureWrite?: GitFeatureWriteAdapter;

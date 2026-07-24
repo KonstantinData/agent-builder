@@ -64,6 +64,18 @@ export const EnvironmentAttestationV1Schema = z
   .strict();
 export type EnvironmentAttestationV1 = z.infer<typeof EnvironmentAttestationV1Schema>;
 
+export const RunStartEvidenceV1Schema = z
+  .object({
+    schemaVersion: z.literal("run-start-evidence/1"),
+    environmentAttestationDigest: DigestSchema,
+    environmentObservedAt: Rfc3339InstantSchema,
+    intentVerificationDigest: DigestSchema,
+    intentVerificationObservedAt: Rfc3339InstantSchema,
+    roadmapDigest: DigestSchema,
+  })
+  .strict();
+export type RunStartEvidenceV1 = z.infer<typeof RunStartEvidenceV1Schema>;
+
 export const ModelRoutingDecisionV1Schema = z
   .object({
     routingPolicyVersion: z.literal("model-routing/1"),
@@ -190,6 +202,16 @@ export const LockedStepContractV1Schema = z
     successCriteria: z.array(z.string().min(1)).min(1),
     maxClaudeRounds: z.number().int().min(1).max(4),
     routingDecision: ModelRoutingDecisionV1Schema,
+    controllerAddendum: z
+      .object({
+        schemaVersion: z.literal("attended-orchestration-controller/1"),
+        maxTransitionsPerInvocation: z.literal(32),
+        lockMode: z.literal("exclusive_no_wait_no_eviction"),
+        automatedThroughPhase: z.literal("contract_locked"),
+        externalImplementationBoundary: z.literal(true),
+      })
+      .strict()
+      .optional(),
     contractDigest: DigestSchema,
   })
   .strict();

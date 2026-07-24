@@ -4,7 +4,7 @@ Status: locked architecture contract for the attended-local meta-slice.
 
 The canonical machine-readable bootstrap contract is
 `contracts/autonomous-roadmap-orchestration-v0.1.json`, identified by digest
-`4cd16d22058ed1bf6579171cfae192c240b92c5450a6901cb18a2dada7aa6bd9`.
+`6141960cb0ea11aed3b4f7c9ecde0748a3cb4dfa5fe1131cf062009f20e28878`.
 
 ## Purpose
 
@@ -68,6 +68,28 @@ or snapshot/history conflict is corruption and stops.
 
 Live state belongs under the ignored `.agent-builder/autonomy/` directory or another
 explicit host path. Versioned schemas, roadmap facts, and this contract remain in Git.
+
+### Attended controller addendum
+
+`AttendedOrchestrationController.runUntilBoundary` composes the pure contracts into an
+executable attended-local protocol. A fresh run validates environment and intent
+evidence before writing, binds their digests and explicit observed instants into the
+initial snapshot, and then serializes each invocation with a per-run exclusive lock.
+The lock never waits, retries, or evicts itself; an existing or crash-stale lock requires
+attended recovery after proving that no owner is active.
+
+Each invocation is additionally bounded to 1-32 persisted transitions. The controller
+can inspect the repository, select the unique roadmap item, record the model route, and
+complete bounded Claude proposal/lock rounds. It never invokes an
+`external_attended` implementation driver: reaching `contract_locked` returns
+`awaiting_external_implementation` without fabricating another transition. Missing
+adapters and uncertain pending side effects return explicit boundaries, and pending
+writes are never reissued without a trusted read-back implementation.
+
+The controller does not yet drive Git, PR, CI, or merge phases because no concrete
+trusted host adapters for those capabilities ship in v0.1. Their interfaces and pure
+gates remain available, and absence stays observable rather than being treated as
+success.
 
 ## Roadmap eligibility
 

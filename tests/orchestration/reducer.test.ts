@@ -11,6 +11,7 @@ import { BASE_SHA, terraRoute, testContract, testIntent } from "./support.js";
 
 const defaultPayloads: Partial<Record<OrchestrationEventKind, Record<string, unknown>>> = {
   RepositoryInspected: {
+    evidenceDigest: "a".repeat(64),
     originMainSha: BASE_SHA,
     attendedLocal: true,
     deploysOnMain: false,
@@ -61,6 +62,7 @@ describe("bounded orchestration reducer", () => {
     state = advance(state, "StepSelected", { stepId: "step-16", routingDecision: terraRoute });
     state = advance(state, "NegotiationOpened");
     state = advance(state, "ContractProposalRecorded");
+    state = advance(state, "NegotiationOpened");
     state = advance(state, "ContractLocked", { contract: testContract() });
     state = advance(state, "ImplementationDispatched");
     expect(state.sideEffectAttemptsConsumed["step-16:implementation"]).toBe(1);

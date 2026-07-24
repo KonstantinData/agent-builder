@@ -57,5 +57,12 @@
     },
     "fallbackDecision": "stop_if_unavailable"
   },
-  "contractDigest": "4cd16d22058ed1bf6579171cfae192c240b92c5450a6901cb18a2dada7aa6bd9"
+  "controllerAddendum": {
+    "schemaVersion": "attended-orchestration-controller/1",
+    "maxTransitionsPerInvocation": 32,
+    "lockMode": "exclusive_no_wait_no_eviction",
+    "automatedThroughPhase": "contract_locked",
+    "externalImplementationBoundary": true
+  },
+  "contractDigest": "6141960cb0ea11aed3b4f7c9ecde0748a3cb4dfa5fe1131cf062009f20e28878"
 }

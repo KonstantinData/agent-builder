@@ -6,6 +6,7 @@ import {
   LockedStepContractV1Schema,
   ModelRoutingDecisionV1Schema,
   Rfc3339InstantSchema,
+  RunStartEvidenceV1Schema,
   RunIntentV1Schema,
   computeLockedContractDigest,
   verifyRunIntentDigest,
@@ -95,6 +96,7 @@ export const OrchestrationSnapshotV1Schema = z
     runId: IdentifierSchema,
     phase: OrchestrationPhaseSchema,
     intent: RunIntentV1Schema,
+    startEvidence: RunStartEvidenceV1Schema.nullable(),
     currentStepId: IdentifierSchema.nullable(),
     contract: LockedStepContractV1Schema.nullable(),
     routingDecision: ModelRoutingDecisionV1Schema.nullable(),
@@ -153,6 +155,7 @@ export type OrchestrationEventV1 = z.infer<typeof OrchestrationEventV1Schema>;
 
 export const RepositoryInspectionResultV1Schema = z
   .object({
+    evidenceDigest: DigestSchema,
     originMainSha: z.string().regex(/^[0-9a-f]{40}$/),
     attendedLocal: z.literal(true),
     deploysOnMain: z.literal(false),
@@ -206,6 +209,7 @@ export function verifySnapshotDigest(snapshotInput: OrchestrationSnapshotV1): bo
 export function createVerifiedRunSnapshot(
   runId: string,
   intent: RunIntentV1,
+  startEvidence: z.infer<typeof RunStartEvidenceV1Schema> | null = null,
 ): OrchestrationSnapshotV1 {
   if (!verifyRunIntentDigest(intent)) {
     throw new TypeError("verified run intent digest does not match canonical intent bytes");
@@ -215,6 +219,7 @@ export function createVerifiedRunSnapshot(
     runId,
     phase: "intent_verified",
     intent: RunIntentV1Schema.parse(intent),
+    startEvidence: startEvidence === null ? null : RunStartEvidenceV1Schema.parse(startEvidence),
     currentStepId: null,
     contract: null,
     routingDecision: null,
@@ -258,7 +263,7 @@ export function createOrchestrationEvent(input: {
 const TRANSITIONS: Readonly<Partial<Record<OrchestrationEventKind, readonly OrchestrationPhase[]>>> = Object.freeze({
   RepositoryInspected: ["intent_verified", "step_complete"],
   StepSelected: ["repository_inspected"],
-  NegotiationOpened: ["step_selected"],
+  NegotiationOpened: ["step_selected", "contract_negotiating"],
   ContractProposalRecorded: ["contract_negotiating"],
   ContractLocked: ["contract_negotiating"],
   ImplementationDispatched: ["contract_locked"],
@@ -416,7 +421,7 @@ export function reduceOrchestration(
     }
     next = { ...next, currentStepId: stepId.data, routingDecision: route.data, stepsConsumed: snapshot.stepsConsumed + 1 };
   }
-  if (event.kind === "NegotiationOpened" || event.kind === "ContractProposalRecorded") {
+  if (event.kind === "NegotiationOpened") {
     const stepId = snapshot.currentStepId;
     if (stepId === null) return stoppedSnapshot(snapshot, event, "contract_malformed");
     const consumed = snapshot.claudeRoundsConsumed[stepId] ?? 0;
