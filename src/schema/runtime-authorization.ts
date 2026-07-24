@@ -24,7 +24,11 @@ import {
   type RunContextFreshnessCondition,
   type TrustedAttestationKey,
 } from "./runtime-attestation.js";
-import type { CallContext } from "./call-context.js";
+import {
+  CallContextSchema,
+  type CallContext,
+} from "./call-context.js";
+import type { LocalAuthorizationReservationReceipt } from "./agent-call-authorization-reservation.js";
 import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
 
 /**
@@ -133,6 +137,10 @@ export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
   "call_graph_edge_approval_not_current",
   "call_graph_edge_approval_revoked",
   "approval_authority_lookup_unavailable",
+  "agent_call_authorization_reservation_not_current",
+  "agent_call_authorization_reservation_revoked",
+  "agent_call_authorization_reservation_window_expired",
+  "agent_call_authorization_reservation_indeterminate",
   "ambiguous_call_edge_approval",
   "call_intent_not_allowed",
   "human_gate_required",
@@ -189,6 +197,30 @@ export type ApprovalAuthorityLookupUnavailableCondition = z.infer<
   typeof ApprovalAuthorityLookupUnavailableConditionSchema
 >;
 
+export const AGENT_CALL_AUTHORIZATION_RESERVATION_CURRENCY_CONDITIONS = [
+  "subject_absent",
+  "authority_superseded",
+] as const;
+export const AgentCallAuthorizationReservationCurrencyConditionSchema = z.enum(
+  AGENT_CALL_AUTHORIZATION_RESERVATION_CURRENCY_CONDITIONS,
+);
+export type AgentCallAuthorizationReservationCurrencyCondition = z.infer<
+  typeof AgentCallAuthorizationReservationCurrencyConditionSchema
+>;
+
+export const AGENT_CALL_AUTHORIZATION_RESERVATION_INDETERMINATE_CONDITIONS = [
+  "timeout",
+  "adapter_error",
+  "store_error",
+  "response_untrustworthy",
+] as const;
+export const AgentCallAuthorizationReservationIndeterminateConditionSchema = z.enum(
+  AGENT_CALL_AUTHORIZATION_RESERVATION_INDETERMINATE_CONDITIONS,
+);
+export type AgentCallAuthorizationReservationIndeterminateCondition = z.infer<
+  typeof AgentCallAuthorizationReservationIndeterminateConditionSchema
+>;
+
 export type RuntimeAuthorizationBlockReason =
   | { readonly type: "input_invalid"; readonly reason: string }
   | { readonly type: "runtime_state_not_executable"; readonly state: string }
@@ -210,6 +242,10 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "call_graph_edge_approval_not_current"; readonly condition: CallGraphEdgeApprovalCurrencyCondition }
   | { readonly type: "call_graph_edge_approval_revoked" }
   | { readonly type: "approval_authority_lookup_unavailable"; readonly condition: ApprovalAuthorityLookupUnavailableCondition }
+  | { readonly type: "agent_call_authorization_reservation_not_current"; readonly condition: AgentCallAuthorizationReservationCurrencyCondition }
+  | { readonly type: "agent_call_authorization_reservation_revoked" }
+  | { readonly type: "agent_call_authorization_reservation_window_expired" }
+  | { readonly type: "agent_call_authorization_reservation_indeterminate"; readonly condition: AgentCallAuthorizationReservationIndeterminateCondition }
   | { readonly type: "ambiguous_call_edge_approval"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
   | { readonly type: "call_intent_not_allowed"; readonly intent: string }
   | { readonly type: "human_gate_required"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
@@ -244,6 +280,7 @@ export type RuntimeAuthorizationResult =
       readonly outcome: "allowed";
       readonly actionType: "agent_call";
       readonly childRunContextDraft: AuthorizedChildRunContextDraft;
+      readonly localAuthorizationReservationReceipt: LocalAuthorizationReservationReceipt;
     }
   | { readonly outcome: "blocked"; readonly reason: RuntimeAuthorizationBlockReason };
 
@@ -251,8 +288,17 @@ export type RuntimeAuthorizationResult =
  * Pure authorization output for an external trusted resolver and signer. The
  * draft deliberately carries neither a child run id nor signed authority.
  */
+export const AuthorizedChildRunContextDraftSchema = z
+  .object({
+    calleeSpecId: SpecIdSchema,
+    calleeVersionOrChannel: z.string().min(1),
+    callContext: CallContextSchema,
+  })
+  .strict();
 export interface AuthorizedChildRunContextDraft {
   readonly calleeSpecId: string;
   readonly calleeVersionOrChannel: string;
   readonly callContext: CallContext;
 }
+export const _authorizedChildRunContextDraftTypeBinding =
+  AuthorizedChildRunContextDraftSchema satisfies z.ZodType<AuthorizedChildRunContextDraft>;

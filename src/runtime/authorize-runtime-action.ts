@@ -6,7 +6,17 @@ import type {
 } from "../schema/agent-spec-content.js";
 import type { CallContext } from "../schema/call-context.js";
 import type { AgentCallPolicyEdge } from "../schema/agent-call-policy-edge.js";
+import {
+  AgentCallAuthorizationReservationResultV1Schema,
+  AgentCallAuthorizationReservationRequestV1Schema,
+  AgentCallAuthorizationReservationTimeoutPolicySchema,
+  type AgentCallAuthorizationReservationBindingV1,
+  type AgentCallAuthorizationReservationRequestV1,
+  type AgentCallAuthorizationReservationTimeoutPolicy,
+  type LocalAuthorizationReservationReceipt,
+} from "../schema/agent-call-authorization-reservation.js";
 import type { RuntimeBindingArtifact } from "../schema/runtime-binding.js";
+import { Rfc3339WithOffsetSchema } from "../schema/runtime-binding-validity.js";
 import {
   CanonicalAuthorityLookupTimeoutPolicySchema,
   CanonicalAuthorityLookupResultV1Schema,
@@ -27,6 +37,7 @@ import type {
 } from "../schema/runtime-attestation.js";
 import type {
   AgentCallRuntimeAction,
+  AuthorizedChildRunContextDraft,
   RuntimeAuthorizationInput,
   RuntimeAuthorizationResult,
   TrustedRuntimeAuthorizationContext,
@@ -48,6 +59,12 @@ import {
   canonicalCallGraphEdgeApprovalDecisionJson,
   computeCallGraphEdgeApprovalDecisionDigest,
 } from "./edge-approval-digest.js";
+import {
+  computeAgentCallAuthorizationReservationId,
+  computeAgentCallReservationActionDigest,
+  computeAgentCallReservationDraftDigest,
+  computeAgentCallReservationRunContextDigest,
+} from "./agent-call-reservation-digest.js";
 
 export const RUNTIME_EXECUTABLE_STATES = ["deployed"] as const;
 
@@ -470,6 +487,49 @@ function deriveNextCallContext(
   };
 }
 
+function leaseExpiryEpochMs(assertedAt: string, ttlSeconds: number): number {
+  return Date.parse(assertedAt) + ttlSeconds * 1_000;
+}
+
+function deriveAuthorizationValidUntilExclusive(
+  input: RuntimeAuthorizationInput,
+  runContext: RunContextEvidencePayload,
+  canonicalApprovalEvidence: ReadonlyArray<AttestedCallGraphEdgeApproval>,
+): string | undefined {
+  const binding = input.runtimeBindingEvidence?.payload;
+  const calleeLifecycle = input.calleeLifecycleEvidence?.payload;
+  if (
+    binding === undefined ||
+    calleeLifecycle === undefined ||
+    canonicalApprovalEvidence.length === 0
+  ) {
+    return undefined;
+  }
+
+  const approvalFreshUntilEpochMs = Math.max(
+    ...canonicalApprovalEvidence.map((evidence) =>
+      leaseExpiryEpochMs(evidence.payload.assertedAt, evidence.payload.freshnessTtl),
+    ),
+  );
+  const validUntilEpochMs = Math.min(
+    leaseExpiryEpochMs(binding.deployedAt, binding.ttl),
+    leaseExpiryEpochMs(
+      input.actingLifecycleEvidence.payload.assertedAt,
+      input.actingLifecycleEvidence.payload.freshnessTtl,
+    ),
+    leaseExpiryEpochMs(runContext.assertedAt, runContext.freshnessTtl),
+    approvalFreshUntilEpochMs,
+    leaseExpiryEpochMs(calleeLifecycle.assertedAt, calleeLifecycle.freshnessTtl),
+  );
+
+  try {
+    const rendered = new Date(validUntilEpochMs).toISOString();
+    return Rfc3339WithOffsetSchema.safeParse(rendered).success ? rendered : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function validateCalleeLifecycleEvidence(
   evidence: AttestedAgentLifecycleEvidence | undefined,
   action: AgentCallRuntimeAction,
@@ -532,6 +592,7 @@ interface AgentCallAuthorizationContinuation {
   readonly declaredCall: ResolvedAgentCall;
   readonly callContext: CallContext;
   readonly currentRunId: string;
+  readonly runContextEvidencePayload: RunContextEvidencePayload;
   readonly context: TrustedRuntimeAuthorizationContext;
   readonly approvedEvidence: ReadonlyArray<AttestedCallGraphEdgeApproval>;
 }
@@ -543,6 +604,14 @@ type AgentCallAuthorizationPlan =
       readonly request: CanonicalAuthorityLookupRequestV1;
       readonly continuation: AgentCallAuthorizationContinuation;
     };
+
+interface AgentCallAuthorizationReservationPlan {
+  readonly kind: "reservation_required";
+  readonly request: AgentCallAuthorizationReservationRequestV1;
+  readonly childRunContextDraft: AuthorizedChildRunContextDraft;
+}
+
+type AgentCallPostLookupPlan = RuntimeAuthorizationResult | AgentCallAuthorizationReservationPlan;
 
 function edgeSubjectFromAgentCall(
   input: RuntimeAuthorizationInput,
@@ -572,6 +641,7 @@ function planAgentCallAuthorization(
   action: AgentCallRuntimeAction,
   callContext: CallContext,
   currentRunId: string,
+  runContextEvidencePayload: RunContextEvidencePayload,
   context: TrustedRuntimeAuthorizationContext,
 ): AgentCallAuthorizationPlan {
   const declaredCall = input.spec.declaredAgentCalls.find(
@@ -643,6 +713,7 @@ function planAgentCallAuthorization(
       declaredCall,
       callContext,
       currentRunId,
+      runContextEvidencePayload,
       context,
       approvedEvidence,
     },
@@ -686,7 +757,7 @@ function resumeAgentCallAuthorization(
   request: CanonicalAuthorityLookupRequestV1,
   continuation: AgentCallAuthorizationContinuation,
   rawLookupResult: unknown,
-): RuntimeAuthorizationResult {
+): AgentCallPostLookupPlan {
   const parsedLookupResult = CanonicalAuthorityLookupResultV1Schema.safeParse(rawLookupResult);
   if (!parsedLookupResult.success) {
     return lookupResponseUntrustworthy();
@@ -820,29 +891,180 @@ function resumeAgentCallAuthorization(
     };
   }
 
+  const childRunContextDraft: AuthorizedChildRunContextDraft = {
+    calleeSpecId: action.calleeSpecId,
+    calleeVersionOrChannel: action.calleeVersionOrChannel,
+    callContext: deriveNextCallContext(
+      callContext,
+      action,
+      declaredCall.maxDepth,
+      edge.maxDepth,
+      currentRunId,
+    ),
+  };
+  const authorizationValidUntilExclusive = deriveAuthorizationValidUntilExclusive(
+    input,
+    continuation.runContextEvidencePayload,
+    matchingEvidence,
+  );
+  if (authorizationValidUntilExclusive === undefined) {
+    return {
+      outcome: "blocked",
+      reason: { type: "input_invalid", reason: "reservation_deadline_derivation_failed" },
+    };
+  }
+
+  const binding: AgentCallAuthorizationReservationBindingV1 = {
+    subject: request.subject,
+    expectedAuthorityRevision: lookupResult.record.authorityRevision,
+    expectedApprovalDigest: lookupResult.record.approvalDigest,
+    currentRunId,
+    runContextDigest: computeAgentCallReservationRunContextDigest(
+      continuation.runContextEvidencePayload,
+    ),
+    actionDigest: computeAgentCallReservationActionDigest(action),
+    childRunContextDraftDigest: computeAgentCallReservationDraftDigest(childRunContextDraft),
+    authorizationTime: request.asOf,
+    authorizationValidUntilExclusive,
+  };
+  const parsedReservationRequest = AgentCallAuthorizationReservationRequestV1Schema.parse({
+    reservationId: computeAgentCallAuthorizationReservationId(binding),
+    ...binding,
+  });
+  const reservationRequest = Object.freeze({
+    ...parsedReservationRequest,
+    subject: Object.freeze({ ...parsedReservationRequest.subject }),
+  });
+
   return {
-    outcome: "allowed",
-    actionType: "agent_call",
-    childRunContextDraft: {
-      calleeSpecId: action.calleeSpecId,
-      calleeVersionOrChannel: action.calleeVersionOrChannel,
-      callContext: deriveNextCallContext(
-        callContext,
-        action,
-        declaredCall.maxDepth,
-        edge.maxDepth,
-        currentRunId,
-      ),
+    kind: "reservation_required",
+    request: reservationRequest,
+    childRunContextDraft,
+  };
+}
+
+function reservationIndeterminate(
+  condition: "timeout" | "adapter_error" | "store_error" | "response_untrustworthy",
+): RuntimeAuthorizationResult {
+  return {
+    outcome: "blocked",
+    reason: {
+      type: "agent_call_authorization_reservation_indeterminate",
+      condition,
     },
   };
 }
 
+function receiptMatchesReservationRequest(
+  receipt: LocalAuthorizationReservationReceipt,
+  request: AgentCallAuthorizationReservationRequestV1,
+): boolean {
+  const {
+    reservationId: _ignoredReservationId,
+    ...binding
+  } = request;
+  return (
+    request.reservationId === computeAgentCallAuthorizationReservationId(binding) &&
+    receipt.reservationId === request.reservationId &&
+    edgeSubjectsEqual(receipt.subject, request.subject) &&
+    receipt.expectedAuthorityRevision === request.expectedAuthorityRevision &&
+    receipt.expectedApprovalDigest === request.expectedApprovalDigest &&
+    receipt.currentRunId === request.currentRunId &&
+    receipt.runContextDigest === request.runContextDigest &&
+    receipt.actionDigest === request.actionDigest &&
+    receipt.childRunContextDraftDigest === request.childRunContextDraftDigest &&
+    receipt.authorizationTime === request.authorizationTime &&
+    receipt.authorizationValidUntilExclusive === request.authorizationValidUntilExclusive &&
+    Date.parse(receipt.reservedAt) >= Date.parse(request.authorizationTime) &&
+    Date.parse(receipt.reservedAt) < Date.parse(request.authorizationValidUntilExclusive)
+  );
+}
+
+function resumeAgentCallAuthorizationReservation(
+  plan: AgentCallAuthorizationReservationPlan,
+  rawReservationResult: unknown,
+): RuntimeAuthorizationResult {
+  const parsedResult = AgentCallAuthorizationReservationResultV1Schema.safeParse(
+    rawReservationResult,
+  );
+  if (!parsedResult.success) {
+    return reservationIndeterminate("response_untrustworthy");
+  }
+  const result = parsedResult.data;
+
+  if (result.kind === "unavailable") {
+    return reservationIndeterminate("store_error");
+  }
+
+  if (result.kind === "reserved" || result.kind === "already_reserved") {
+    if (!receiptMatchesReservationRequest(result.receipt, plan.request)) {
+      return reservationIndeterminate("response_untrustworthy");
+    }
+    return {
+      outcome: "allowed",
+      actionType: "agent_call",
+      childRunContextDraft: plan.childRunContextDraft,
+      localAuthorizationReservationReceipt: result.receipt,
+    };
+  }
+
+  const observedAtEpochMs = Date.parse(result.observedAt);
+  const authorizationTimeEpochMs = Date.parse(plan.request.authorizationTime);
+  if (observedAtEpochMs < authorizationTimeEpochMs) {
+    return reservationIndeterminate("response_untrustworthy");
+  }
+
+  if (result.kind === "subject_absent") {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "agent_call_authorization_reservation_not_current",
+        condition: "subject_absent",
+      },
+    };
+  }
+
+  if (result.kind === "authority_revoked") {
+    if (result.currentAuthorityRevision <= plan.request.expectedAuthorityRevision) {
+      return reservationIndeterminate("response_untrustworthy");
+    }
+    return {
+      outcome: "blocked",
+      reason: { type: "agent_call_authorization_reservation_revoked" },
+    };
+  }
+
+  if (result.kind === "authority_superseded") {
+    if (result.currentAuthorityRevision <= plan.request.expectedAuthorityRevision) {
+      return reservationIndeterminate("response_untrustworthy");
+    }
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "agent_call_authorization_reservation_not_current",
+        condition: "authority_superseded",
+      },
+    };
+  }
+
+  if (
+    observedAtEpochMs < Date.parse(plan.request.authorizationValidUntilExclusive)
+  ) {
+    return reservationIndeterminate("response_untrustworthy");
+  }
+  return {
+    outcome: "blocked",
+    reason: { type: "agent_call_authorization_reservation_window_expired" },
+  };
+}
+
 /**
- * Data Plane Runtime Harness v0.1. This is an authorization and context
- * derivation layer only: it never executes tools or mutates network, memory,
- * registry, DB, deployment state, or human-gate decisions. Agent-call
- * authorization performs one read-only canonical-authority lookup only after
- * every preceding guard and every relevant Step-13 approval check succeeds.
+ * Data Plane Runtime Harness v0.1. This is an authorization, reservation, and
+ * context-derivation layer only: it never executes tools or agents. Agent-call
+ * authorization performs one read-only canonical-authority admission lookup
+ * after every relevant Step-13 approval check, then delegates exactly one
+ * atomic local reservation after every remaining pure guard succeeds. It makes
+ * no other network, memory, registry, DB, deployment, or human-gate mutation.
  *
  * Known v0.1 boundaries:
  * - Runtime authorization consumes a signed full RuntimeBindingArtifact and
@@ -857,29 +1079,38 @@ function resumeAgentCallAuthorization(
  *   causality, and checked for freshness before decision fields are used.
  * - Run context, run identity, cycle chain, and remaining budgets are carried
  *   only by signed, content-bound evidence with a maximum 300-second freshness
- *   window. An allowed agent call returns an unsigned child-context draft for
- *   an external trusted resolver and signer; this Harness never mints runtime
- *   authority.
+ *   window. An allowed agent call returns an unsigned child-context draft and a
+ *   host/store-local reservation receipt. An external trusted resolver and
+ *   signer must still assign child identity and runtime authority.
  * - Context attestation proves origin and integrity of presented claims, not
- *   parent spend consumption, single-use semantics, parent-child issuance, or
- *   current run identity. Sibling and nonce replay require a later runtime
- *   store or parent-decision linkage.
+ *   parent spend consumption, parent-child issuance, or current run identity.
+ *   The reservation is single only as a logical local authorization binding;
+ *   sibling spend-down and execution replay require later boundaries.
  * - A host-bound point-in-time resolver proves canonical edge authority as of
  *   the same trusted authorization instant used by every lease check. decidedAt
  *   stays audit history and never starts the lease.
  *   A stale relevant rejected artifact blocks fail-closed, allowing presenter
  *   self-denial but no privilege escalation; rejection is not revocation.
- * - External signing, private-key custody, KMS/HSM, key revocation, nonce replay
- *   storage, execution-time revocation closure, synchronous lifecycle lookup,
+ * - The host-bound reservation adapter must atomically compare canonical
+ *   authority and insert the reservation. Its local receipt is not portable
+ *   authority and proves neither dispatch nor at-most-once execution.
+ * - External signing, private-key custody, KMS/HSM, key revocation,
+ *   parent-budget consumption, sibling replay, synchronous lifecycle lookup,
  *   process liveness, channel resolution, and real execution remain out of scope.
  */
 export type CanonicalEdgeAuthorityResolver = (
   request: CanonicalAuthorityLookupRequestV1,
 ) => Promise<unknown>;
 
+export type AgentCallAuthorizationReservationAdapter = (
+  request: AgentCallAuthorizationReservationRequestV1,
+) => Promise<unknown>;
+
 export interface RuntimeAuthorizerConfig {
   readonly canonicalAuthorityResolver: CanonicalEdgeAuthorityResolver;
   readonly timeoutPolicy: CanonicalAuthorityLookupTimeoutPolicy;
+  readonly authorizationReservationAdapter: AgentCallAuthorizationReservationAdapter;
+  readonly authorizationReservationTimeoutPolicy: AgentCallAuthorizationReservationTimeoutPolicy;
 }
 
 export interface RuntimeAuthorizer {
@@ -890,6 +1121,7 @@ export interface RuntimeAuthorizer {
 }
 
 class CanonicalAuthorityLookupTimeoutError extends Error {}
+class AgentCallAuthorizationReservationTimeoutError extends Error {}
 
 async function resolveCanonicalAuthority(
   resolver: CanonicalEdgeAuthorityResolver,
@@ -913,6 +1145,33 @@ async function resolveCanonicalAuthority(
   }
 }
 
+async function reserveAgentCallAuthorization(
+  adapter: AgentCallAuthorizationReservationAdapter,
+  request: AgentCallAuthorizationReservationRequestV1,
+  timeoutMs: number,
+): Promise<unknown> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(
+      () =>
+        reject(
+          new AgentCallAuthorizationReservationTimeoutError(
+            "agent-call authorization reservation timed out",
+          ),
+        ),
+      timeoutMs,
+    );
+  });
+
+  try {
+    return await Promise.race([Promise.resolve().then(() => adapter(request)), timeout]);
+  } finally {
+    if (timeoutHandle !== undefined) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
 export function createRuntimeAuthorizer(config: RuntimeAuthorizerConfig): RuntimeAuthorizer {
   if (typeof config.canonicalAuthorityResolver !== "function") {
     throw new TypeError("canonicalAuthorityResolver must be a function");
@@ -924,8 +1183,23 @@ export function createRuntimeAuthorizer(config: RuntimeAuthorizerConfig): Runtim
     throw new TypeError("timeoutPolicy must contain a valid positive timeoutMs");
   }
 
+  if (typeof config.authorizationReservationAdapter !== "function") {
+    throw new TypeError("authorizationReservationAdapter must be a function");
+  }
+  const parsedReservationTimeoutPolicy =
+    AgentCallAuthorizationReservationTimeoutPolicySchema.safeParse(
+      config.authorizationReservationTimeoutPolicy,
+    );
+  if (!parsedReservationTimeoutPolicy.success) {
+    throw new TypeError(
+      "authorizationReservationTimeoutPolicy must contain a valid positive timeoutMs",
+    );
+  }
+
   const resolver = config.canonicalAuthorityResolver;
   const timeoutMs = parsedTimeoutPolicy.data.timeoutMs;
+  const reservationAdapter = config.authorizationReservationAdapter;
+  const reservationTimeoutMs = parsedReservationTimeoutPolicy.data.timeoutMs;
 
   return Object.freeze({
     authorizeRuntimeAction: async (
@@ -972,6 +1246,7 @@ export function createRuntimeAuthorizer(config: RuntimeAuthorizerConfig): Runtim
         validatedInput.action,
         runContext.callContext,
         runContext.currentRunId,
+        runContext,
         validatedContext,
       );
       if (plan.kind === "terminal") {
@@ -998,10 +1273,33 @@ export function createRuntimeAuthorizer(config: RuntimeAuthorizerConfig): Runtim
         };
       }
 
-      return resumeAgentCallAuthorization(
+      const postLookupPlan = resumeAgentCallAuthorization(
         plan.request,
         plan.continuation,
         rawLookupResult,
+      );
+      if ("outcome" in postLookupPlan) {
+        return postLookupPlan;
+      }
+
+      let rawReservationResult: unknown;
+      try {
+        rawReservationResult = await reserveAgentCallAuthorization(
+          reservationAdapter,
+          postLookupPlan.request,
+          reservationTimeoutMs,
+        );
+      } catch (error) {
+        return reservationIndeterminate(
+          error instanceof AgentCallAuthorizationReservationTimeoutError
+            ? "timeout"
+            : "adapter_error",
+        );
+      }
+
+      return resumeAgentCallAuthorizationReservation(
+        postLookupPlan,
+        rawReservationResult,
       );
     },
   });
