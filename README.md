@@ -1,6 +1,12 @@
 # agent-builder
 
 `agent-builder` is a TypeScript prototype for a control-plane-first builder agent.
+
+The attended-local, bounded continuation protocol is documented in
+[`docs/architecture/autonomous-roadmap-orchestration-v0.1.md`](docs/architecture/autonomous-roadmap-orchestration-v0.1.md).
+Its machine-readable roadmap records the merge-backed Step 1-15 baseline and the single
+current Step 16 candidate. It never turns Claude, a model router, or an implementation
+driver into a Control Plane authority.
 Its job is not to execute agents directly. It turns builder intent into validated,
 versioned agent specifications, evaluates them against policy, and produces auditable
 approval decisions without deploying or executing the resulting agents.

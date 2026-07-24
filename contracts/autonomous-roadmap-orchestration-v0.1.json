@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "locked-step-contract/1",
+  "runId": "bootstrap-2026-07-24",
+  "stepId": "meta-a1",
+  "baseRevision": "b3244c73ca79c68dbba3b4a05234f93d3ed92752",
+  "changeClass": "governance_meta",
+  "capabilityEffect": "reduce_or_preserve",
+  "deploymentEffect": "none",
+  "allowedPaths": [
+    ".gitignore",
+    "README.md",
+    "contracts/autonomous-roadmap-orchestration-v0.1.json",
+    "docs/architecture/autonomous-roadmap-orchestration-v0.1.md",
+    "roadmap/agent-builder-roadmap.v1.json",
+    "src/orchestration/",
+    "tests/orchestration/"
+  ],
+  "forbiddenSurfaces": [
+    ".github/",
+    "package.json",
+    "pnpm-lock.yaml",
+    "secrets",
+    "deploy/release configuration outside the documented merge gate"
+  ],
+  "successCriteria": [
+    "pnpm typecheck passes",
+    "pnpm test passes",
+    "Claude implementation review approves the locked contract implementation",
+    "GitHub verify passes before merge"
+  ],
+  "maxClaudeRounds": 4,
+  "routingDecision": {
+    "routingPolicyVersion": "model-routing/1",
+    "requestedModel": "gpt-5.6-sol",
+    "requestedReasoningEffort": "high",
+    "selectedModel": "gpt-5.6-terra",
+    "reasoningEffort": "medium",
+    "triggers": [
+      "security_contract",
+      "major_architecture_decision",
+      "claude_contract_conflict"
+    ],
+    "triggerEvidence": {
+      "securityContract": true,
+      "majorArchitectureDecision": true,
+      "claudeContractConflict": true,
+      "unsuccessfulAttemptsInPhase": 0,
+      "contextComplexityUnits": 90000,
+      "highContextComplexityThreshold": 100000
+    },
+    "justification": "The current attended task cannot prove a dynamic model switch. Sol/high is recorded for the next task boundary; the running task retains the Terra/medium policy baseline without claiming a switch.",
+    "status": "deferred_to_next_task_start",
+    "attemptLimit": 2,
+    "observableBudget": {
+      "unit": "unavailable",
+      "limit": null
+    },
+    "fallbackDecision": "stop_if_unavailable"
+  },
+  "contractDigest": "4cd16d22058ed1bf6579171cfae192c240b92c5450a6901cb18a2dada7aa6bd9"
+}

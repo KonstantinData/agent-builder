@@ -3,6 +3,7 @@ node_modules/
 dist/
 coverage/
 pnpm-debug.log*
+.agent-builder/autonomy/
 
 # Local generated learning materials
 /docs/learning/**
