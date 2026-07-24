@@ -1,9 +1,20 @@
 import { computeContentHash } from "../assembler/content-hash.js";
 import { detectCycleInChain } from "../invariants/cycle-detection.js";
-import type { AgentSpecContent } from "../schema/agent-spec-content.js";
+import type {
+  AgentSpecContent,
+  ResolvedAgentCall,
+} from "../schema/agent-spec-content.js";
 import type { CallContext } from "../schema/call-context.js";
 import type { AgentCallPolicyEdge } from "../schema/agent-call-policy-edge.js";
 import type { RuntimeBindingArtifact } from "../schema/runtime-binding.js";
+import {
+  CanonicalAuthorityLookupTimeoutPolicySchema,
+  CanonicalAuthorityLookupResultV1Schema,
+  type CanonicalAuthorityLookupRequestV1,
+  type CanonicalAuthorityLookupResultV1,
+  type CanonicalAuthorityLookupTimeoutPolicy,
+  type EdgeSubjectV1,
+} from "../schema/canonical-edge-authority.js";
 import type {
   AgentLifecycleEvidencePayload,
   AttestationEnvelope,
@@ -33,6 +44,10 @@ import {
   RUNTIME_ATTESTATION_DOMAIN_BY_EVIDENCE_KIND,
   verifyEd25519Attestation,
 } from "./runtime-attestation.js";
+import {
+  canonicalCallGraphEdgeApprovalDecisionJson,
+  computeCallGraphEdgeApprovalDecisionDigest,
+} from "./edge-approval-digest.js";
 
 export const RUNTIME_EXECUTABLE_STATES = ["deployed"] as const;
 
@@ -511,13 +526,54 @@ function validateCalleeLifecycleEvidence(
   return validateLifecycleFreshness(evidence.payload, "callee", context);
 }
 
-function authorizeAgentCall(
+interface AgentCallAuthorizationContinuation {
+  readonly input: RuntimeAuthorizationInput;
+  readonly action: AgentCallRuntimeAction;
+  readonly declaredCall: ResolvedAgentCall;
+  readonly callContext: CallContext;
+  readonly currentRunId: string;
+  readonly context: TrustedRuntimeAuthorizationContext;
+  readonly approvedEvidence: ReadonlyArray<AttestedCallGraphEdgeApproval>;
+}
+
+type AgentCallAuthorizationPlan =
+  | { readonly kind: "terminal"; readonly result: RuntimeAuthorizationResult }
+  | {
+      readonly kind: "lookup_required";
+      readonly request: CanonicalAuthorityLookupRequestV1;
+      readonly continuation: AgentCallAuthorizationContinuation;
+    };
+
+function edgeSubjectFromAgentCall(
+  input: RuntimeAuthorizationInput,
+  action: AgentCallRuntimeAction,
+): EdgeSubjectV1 {
+  return {
+    callerSpecId: input.spec.specId,
+    callerVersion: input.spec.version,
+    calleeSpecId: action.calleeSpecId,
+    calleeVersionOrChannel: action.calleeVersionOrChannel,
+    trustDomainId: input.spec.trustDomainId,
+  };
+}
+
+function edgeSubjectsEqual(left: EdgeSubjectV1, right: EdgeSubjectV1): boolean {
+  return (
+    left.callerSpecId === right.callerSpecId &&
+    left.callerVersion === right.callerVersion &&
+    left.calleeSpecId === right.calleeSpecId &&
+    left.calleeVersionOrChannel === right.calleeVersionOrChannel &&
+    left.trustDomainId === right.trustDomainId
+  );
+}
+
+function planAgentCallAuthorization(
   input: RuntimeAuthorizationInput,
   action: AgentCallRuntimeAction,
   callContext: CallContext,
   currentRunId: string,
   context: TrustedRuntimeAuthorizationContext,
-): RuntimeAuthorizationResult {
+): AgentCallAuthorizationPlan {
   const declaredCall = input.spec.declaredAgentCalls.find(
     (call) =>
       call.calleeSpecId === action.calleeSpecId &&
@@ -525,11 +581,14 @@ function authorizeAgentCall(
   );
   if (!declaredCall) {
     return {
-      outcome: "blocked",
-      reason: {
-        type: "agent_call_not_declared",
-        calleeSpecId: action.calleeSpecId,
-        calleeVersionOrChannel: action.calleeVersionOrChannel,
+      kind: "terminal",
+      result: {
+        outcome: "blocked",
+        reason: {
+          type: "agent_call_not_declared",
+          calleeSpecId: action.calleeSpecId,
+          calleeVersionOrChannel: action.calleeVersionOrChannel,
+        },
       },
     };
   }
@@ -543,7 +602,7 @@ function authorizeAgentCall(
       context,
     );
     if (attestationBlock) {
-      return attestationBlock;
+      return { kind: "terminal", result: attestationBlock };
     }
 
     const authorityBlock = validateCallGraphEdgeApprovalAuthority(
@@ -551,25 +610,165 @@ function authorizeAgentCall(
       context,
     );
     if (authorityBlock) {
-      return authorityBlock;
+      return { kind: "terminal", result: authorityBlock };
     }
   }
 
-  const approvedEdges = relevantApprovalEvidence
-    .filter((approvalEvidence) => approvalEvidence.payload.approval.decision === "approved")
-    .map((approvalEvidence) => approvalEvidence.payload.approval.edge);
-  if (approvedEdges.length === 0) {
+  const approvedEvidence = relevantApprovalEvidence.filter(
+    (approvalEvidence) => approvalEvidence.payload.approval.decision === "approved",
+  );
+  if (approvedEvidence.length === 0) {
     return {
-      outcome: "blocked",
-      reason: {
-        type: "call_edge_not_approved",
-        calleeSpecId: action.calleeSpecId,
-        calleeVersionOrChannel: action.calleeVersionOrChannel,
+      kind: "terminal",
+      result: {
+        outcome: "blocked",
+        reason: {
+          type: "call_edge_not_approved",
+          calleeSpecId: action.calleeSpecId,
+          calleeVersionOrChannel: action.calleeVersionOrChannel,
+        },
       },
     };
   }
 
-  if (approvedEdges.some((edge) => edge.requiresHumanGate)) {
+  return {
+    kind: "lookup_required",
+    request: {
+      subject: edgeSubjectFromAgentCall(input, action),
+      asOf: context.authorizationTime,
+    },
+    continuation: {
+      input,
+      action,
+      declaredCall,
+      callContext,
+      currentRunId,
+      context,
+      approvedEvidence,
+    },
+  };
+}
+
+function lookupResponseUntrustworthy(): RuntimeAuthorizationResult {
+  return {
+    outcome: "blocked",
+    reason: {
+      type: "approval_authority_lookup_unavailable",
+      condition: "response_untrustworthy",
+    },
+  };
+}
+
+function validateLookupResultBinding(
+  request: CanonicalAuthorityLookupRequestV1,
+  result: CanonicalAuthorityLookupResultV1,
+): RuntimeAuthorizationResult | undefined {
+  if (result.kind === "unavailable") {
+    return undefined;
+  }
+
+  if (
+    result.asOf !== request.asOf ||
+    !edgeSubjectsEqual(result.subject, request.subject) ||
+    Date.parse(result.observedAt) < Date.parse(request.asOf)
+  ) {
+    return lookupResponseUntrustworthy();
+  }
+
+  if (result.kind === "found" && !edgeSubjectsEqual(result.record.subject, request.subject)) {
+    return lookupResponseUntrustworthy();
+  }
+
+  return undefined;
+}
+
+function resumeAgentCallAuthorization(
+  request: CanonicalAuthorityLookupRequestV1,
+  continuation: AgentCallAuthorizationContinuation,
+  rawLookupResult: unknown,
+): RuntimeAuthorizationResult {
+  const parsedLookupResult = CanonicalAuthorityLookupResultV1Schema.safeParse(rawLookupResult);
+  if (!parsedLookupResult.success) {
+    return lookupResponseUntrustworthy();
+  }
+  const lookupResult = parsedLookupResult.data;
+
+  const bindingBlock = validateLookupResultBinding(request, lookupResult);
+  if (bindingBlock) {
+    return bindingBlock;
+  }
+
+  if (lookupResult.kind === "unavailable") {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "approval_authority_lookup_unavailable",
+        condition: lookupResult.condition,
+      },
+    };
+  }
+
+  if (lookupResult.kind === "subject_absent") {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_not_current",
+        condition: "subject_absent",
+      },
+    };
+  }
+
+  const matchingEvidence = continuation.approvedEvidence.filter(
+    (approvalEvidence) =>
+      computeCallGraphEdgeApprovalDecisionDigest(approvalEvidence.payload.approval) ===
+      lookupResult.record.approvalDigest,
+  );
+
+  if (matchingEvidence.length === 0) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_not_current",
+        condition: "authority_superseded",
+      },
+    };
+  }
+
+  if (lookupResult.record.status === "revoked") {
+    return {
+      outcome: "blocked",
+      reason: { type: "call_graph_edge_approval_revoked" },
+    };
+  }
+
+  const evidenceByCanonicalDecision = new Map<string, AttestedCallGraphEdgeApproval>();
+  for (const approvalEvidence of matchingEvidence) {
+    const canonicalDecision = canonicalCallGraphEdgeApprovalDecisionJson(
+      approvalEvidence.payload.approval,
+    );
+    evidenceByCanonicalDecision.set(canonicalDecision, approvalEvidence);
+  }
+
+  if (evidenceByCanonicalDecision.size > 1) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "ambiguous_call_edge_approval",
+        calleeSpecId: continuation.action.calleeSpecId,
+        calleeVersionOrChannel: continuation.action.calleeVersionOrChannel,
+      },
+    };
+  }
+
+  const selectedEvidence = evidenceByCanonicalDecision.values().next().value;
+  if (selectedEvidence === undefined) {
+    return lookupResponseUntrustworthy();
+  }
+
+  const { input, action, declaredCall, callContext, currentRunId, context } = continuation;
+  const edge = selectedEvidence.payload.approval.edge as AgentCallPolicyEdge;
+
+  if (edge.requiresHumanGate) {
     return {
       outcome: "blocked",
       reason: {
@@ -579,19 +778,6 @@ function authorizeAgentCall(
       },
     };
   }
-
-  if (approvedEdges.length > 1) {
-    return {
-      outcome: "blocked",
-      reason: {
-        type: "ambiguous_call_edge_approval",
-        calleeSpecId: action.calleeSpecId,
-        calleeVersionOrChannel: action.calleeVersionOrChannel,
-      },
-    };
-  }
-
-  const edge = approvedEdges[0] as AgentCallPolicyEdge;
 
   if (!declaredCall.allowedIntents.includes(action.intent) || !edge.allowedIntents.includes(action.intent)) {
     return { outcome: "blocked", reason: { type: "call_intent_not_allowed", intent: action.intent } };
@@ -653,8 +839,10 @@ function authorizeAgentCall(
 
 /**
  * Data Plane Runtime Harness v0.1. This is an authorization and context
- * derivation layer only: it never executes tools, never touches network,
- * memory, registry, DB, deployment state, or human-gate decisions.
+ * derivation layer only: it never executes tools or mutates network, memory,
+ * registry, DB, deployment state, or human-gate decisions. Agent-call
+ * authorization performs one read-only canonical-authority lookup only after
+ * every preceding guard and every relevant Step-13 approval check succeeds.
  *
  * Known v0.1 boundaries:
  * - Runtime authorization consumes a signed full RuntimeBindingArtifact and
@@ -676,60 +864,145 @@ function authorizeAgentCall(
  *   parent spend consumption, single-use semantics, parent-child issuance, or
  *   current run identity. Sibling and nonce replay require a later runtime
  *   store or parent-decision linkage.
- * - Edge approval leases limit replay but do not prove that an artifact is the
- *   latest canonical decision, remains unrevoked inside the lease window, or
- *   is single-use. decidedAt stays audit history and never starts the lease.
+ * - A host-bound point-in-time resolver proves canonical edge authority as of
+ *   the same trusted authorization instant used by every lease check. decidedAt
+ *   stays audit history and never starts the lease.
  *   A stale relevant rejected artifact blocks fail-closed, allowing presenter
  *   self-denial but no privilege escalation; rejection is not revocation.
  * - External signing, private-key custody, KMS/HSM, key revocation, nonce replay
- *   storage, synchronous lifecycle lookup, process liveness, channel resolution,
- *   and real execution remain out of scope.
+ *   storage, execution-time revocation closure, synchronous lifecycle lookup,
+ *   process liveness, channel resolution, and real execution remain out of scope.
  */
-export function authorizeRuntimeAction(
-  input: RuntimeAuthorizationInput,
-  context: TrustedRuntimeAuthorizationContext,
-): RuntimeAuthorizationResult {
-  const parsed = RuntimeAuthorizationInputSchema.safeParse(input);
-  if (!parsed.success) {
-    return {
-      outcome: "blocked",
-      reason: { type: "input_invalid", reason: "schema_validation_failed" },
-    };
-  }
-  const validatedInput = parsed.data;
+export type CanonicalEdgeAuthorityResolver = (
+  request: CanonicalAuthorityLookupRequestV1,
+) => Promise<unknown>;
 
-  const parsedContext = TrustedRuntimeAuthorizationContextSchema.safeParse(context);
-  if (!parsedContext.success) {
-    return {
-      outcome: "blocked",
-      reason: {
-        type: "runtime_authorization_context_invalid",
-        reason: "schema_validation_failed",
-      },
-    };
-  }
-  const validatedContext = parsedContext.data;
+export interface RuntimeAuthorizerConfig {
+  readonly canonicalAuthorityResolver: CanonicalEdgeAuthorityResolver;
+  readonly timeoutPolicy: CanonicalAuthorityLookupTimeoutPolicy;
+}
 
-  const runtimeEvidenceBlock = validateRuntimeEvidence(validatedInput, validatedContext);
-  if (runtimeEvidenceBlock) {
-    return runtimeEvidenceBlock;
+export interface RuntimeAuthorizer {
+  readonly authorizeRuntimeAction: (
+    input: RuntimeAuthorizationInput,
+    context: TrustedRuntimeAuthorizationContext,
+  ) => Promise<RuntimeAuthorizationResult>;
+}
+
+class CanonicalAuthorityLookupTimeoutError extends Error {}
+
+async function resolveCanonicalAuthority(
+  resolver: CanonicalEdgeAuthorityResolver,
+  request: CanonicalAuthorityLookupRequestV1,
+  timeoutMs: number,
+): Promise<unknown> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = setTimeout(
+      () => reject(new CanonicalAuthorityLookupTimeoutError("canonical authority lookup timed out")),
+      timeoutMs,
+    );
+  });
+
+  try {
+    return await Promise.race([Promise.resolve().then(() => resolver(request)), timeout]);
+  } finally {
+    if (timeoutHandle !== undefined) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
+
+export function createRuntimeAuthorizer(config: RuntimeAuthorizerConfig): RuntimeAuthorizer {
+  if (typeof config.canonicalAuthorityResolver !== "function") {
+    throw new TypeError("canonicalAuthorityResolver must be a function");
+  }
+  const parsedTimeoutPolicy = CanonicalAuthorityLookupTimeoutPolicySchema.safeParse(
+    config.timeoutPolicy,
+  );
+  if (!parsedTimeoutPolicy.success) {
+    throw new TypeError("timeoutPolicy must contain a valid positive timeoutMs");
   }
 
-  const runContext = validateRunContextEvidence(validatedInput, validatedContext);
-  if ("outcome" in runContext) {
-    return runContext;
-  }
+  const resolver = config.canonicalAuthorityResolver;
+  const timeoutMs = parsedTimeoutPolicy.data.timeoutMs;
 
-  switch (validatedInput.action.type) {
-    case "tool_call":
-      return authorizeToolCall(validatedInput, validatedInput.action);
-    case "agent_call":
-      return authorizeAgentCall(
+  return Object.freeze({
+    authorizeRuntimeAction: async (
+      input: RuntimeAuthorizationInput,
+      context: TrustedRuntimeAuthorizationContext,
+    ): Promise<RuntimeAuthorizationResult> => {
+      const parsed = RuntimeAuthorizationInputSchema.safeParse(input);
+      if (!parsed.success) {
+        return {
+          outcome: "blocked",
+          reason: { type: "input_invalid", reason: "schema_validation_failed" },
+        };
+      }
+      const validatedInput = parsed.data;
+
+      const parsedContext = TrustedRuntimeAuthorizationContextSchema.safeParse(context);
+      if (!parsedContext.success) {
+        return {
+          outcome: "blocked",
+          reason: {
+            type: "runtime_authorization_context_invalid",
+            reason: "schema_validation_failed",
+          },
+        };
+      }
+      const validatedContext = parsedContext.data;
+
+      const runtimeEvidenceBlock = validateRuntimeEvidence(validatedInput, validatedContext);
+      if (runtimeEvidenceBlock) {
+        return runtimeEvidenceBlock;
+      }
+
+      const runContext = validateRunContextEvidence(validatedInput, validatedContext);
+      if ("outcome" in runContext) {
+        return runContext;
+      }
+
+      if (validatedInput.action.type === "tool_call") {
+        return authorizeToolCall(validatedInput, validatedInput.action);
+      }
+
+      const plan = planAgentCallAuthorization(
         validatedInput,
         validatedInput.action,
         runContext.callContext,
         runContext.currentRunId,
         validatedContext,
       );
-  }
+      if (plan.kind === "terminal") {
+        return plan.result;
+      }
+
+      let rawLookupResult: unknown;
+      try {
+        rawLookupResult = await resolveCanonicalAuthority(
+          resolver,
+          plan.request,
+          timeoutMs,
+        );
+      } catch (error) {
+        return {
+          outcome: "blocked",
+          reason: {
+            type: "approval_authority_lookup_unavailable",
+            condition:
+              error instanceof CanonicalAuthorityLookupTimeoutError
+                ? "timeout"
+                : "resolver_error",
+          },
+        };
+      }
+
+      return resumeAgentCallAuthorization(
+        plan.request,
+        plan.continuation,
+        rawLookupResult,
+      );
+    },
+  });
 }
