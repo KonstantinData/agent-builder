@@ -229,6 +229,12 @@ describe("Runtime authorization schemas", () => {
     expect(
       RuntimeAuthorizationInputSchema.safeParse({
         ...candidate,
+        reservationId: "caller-selected",
+      }).success,
+    ).toBe(false);
+    expect(
+      RuntimeAuthorizationInputSchema.safeParse({
+        ...candidate,
         calleeLifecycleEvidence: {
           payload: { ...actingPayload, freshnessTtl: 301 },
           attestation: actingLifecycleEvidence.attestation,
@@ -261,6 +267,13 @@ describe("Runtime authorization schemas", () => {
         authorizationTime: "2026-07-23T12:00:00Z",
         attestationKeys: [TEST_TRUSTED_ATTESTATION_KEY],
         canonicalAuthorityResult: { kind: "subject_absent" },
+      }).success,
+    ).toBe(false);
+    expect(
+      TrustedRuntimeAuthorizationContextSchema.safeParse({
+        authorizationTime: "2026-07-23T12:00:00Z",
+        attestationKeys: [TEST_TRUSTED_ATTESTATION_KEY],
+        authorizationReservationAdapter: "caller-selected",
       }).success,
     ).toBe(false);
   });

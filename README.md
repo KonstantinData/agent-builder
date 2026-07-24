@@ -44,9 +44,10 @@ approved AgentSpecContent
   -> allowed or blocked authorization result
 ```
 
-The Runtime Harness does not execute tools, call agents, deploy specs, or write
-runtime state. It only proves whether a planned runtime action is authorized by
-already-approved, versioned bindings.
+The Runtime Harness does not execute tools, call agents, or deploy specs. It proves
+whether a planned runtime action is authorized by already-approved, versioned
+bindings and, for an otherwise allowed agent call, delegates one atomic local
+authorization reservation to a host-bound trusted adapter.
 
 ## What Is Implemented
 
@@ -147,6 +148,22 @@ already-approved, versioned bindings.
   - derives an unsigned child run-context draft only for allowed agent calls; an
     external trusted resolver and signer must assign the child identity and authority
   - enforces runtime budget monotonicity across call, token, and time budgets
+  - derives domain-separated SHA-256 identities for the verified run-context payload,
+    complete agent-call action, deterministic child-context draft, and complete
+    reservation binding without accepting a caller-supplied reservation identifier
+  - computes one canonical UTC reservation deadline as the earliest required binding
+    or evidence expiry, using the freshest independently valid lease among duplicate
+    canonical approval evidence without input-order selection
+  - invokes one host-bound atomic authorization-reservation adapter only after every
+    pure agent-call guard passes; canonical-authority comparison and reservation insert
+    must share one serializable or equivalently linearizable operation
+  - returns an allowed agent call only for a strict `reserved` or exact
+    `already_reserved` receipt bound to every request field and the store-authoritative
+    reservation instant; timeout, adapter/store failure, malformed output, authority
+    change, or an expired authorization window remains fail-closed
+  - keeps the local reservation receipt beside, never inside, the unsigned child
+    run-context draft; it is not portable authority and proves neither dispatch nor
+    at-most-once execution
 - Runtime/control invariants for:
   - executable-boundary checks
   - call-graph cycle detection
@@ -238,10 +255,11 @@ This package intentionally keeps several capabilities out of scope:
 - no clock-skew grace for future-dated lifecycle evidence in v0.1
 - no channel resolution or process-liveness claim from lifecycle evidence
 - no claim that canonical edge authority remains unrevoked after the injected
-  `authorizationTime` and until real execution; closing that interval requires a
-  later execution-time or transactional authority boundary
+  `authorizationTime` without a successful final reservation; even a successful
+  reservation does not prove that authority remains unrevoked until real execution
 - no single-use edge authority or nonce consumption; canonical currentness and
-  non-revocation as of `authorizationTime` do not prevent repeated presentation
+  one logical reservation per deterministic authorization attempt do not prevent a
+  later executor from presenting or executing the local receipt repeatedly
 - no parent-budget consumption, sibling/nonce replay protection, or proof that a
   presented parent run actually issued a child context; those require a runtime store
   or parent-decision linkage beyond signed run-context integrity

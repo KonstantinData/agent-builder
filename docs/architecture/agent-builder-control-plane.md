@@ -720,7 +720,9 @@ The draft has no child run ID, resolved immutable callee version, content hash,
 assertion time, TTL, key, or signature. It is not runtime authority. An external
 trusted resolver must resolve the opaque callee version/channel and a signer must
 issue a new `AttestedRunContextEvidence` for the child. The Harness verifies public
-signatures only and remains pure and stateless.
+signatures only. This Step-12 boundary is pure and stateless; Step 15 later adds one
+separate host-bound local authorization reservation without changing the draft into
+runtime authority.
 
 Run-context attestation proves the origin and integrity of the presented run claims.
 It does not consume parent budget, prevent sibling or nonce replay, prove that the
@@ -890,22 +892,142 @@ through subsequent real execution. Revocation after that instant, single-use and
 consumption, parent-budget consumption, sibling replay, process liveness, channel
 resolution, key custody, and real execution remain separate boundaries.
 
+### Agent-Call Authorization Reservation Contract v0.1
+
+Step 15 adds one state-changing Data Plane boundary without claiming execution. After
+all existing global, Step-13, Step-14, human-gate, intent, cycle, callee-lifecycle,
+depth, call-budget, and budget-monotonicity guards pass, the Runtime Authorizer invokes
+one host-bound reservation adapter. No tool call or earlier blocked result reaches the
+adapter.
+
+The adapter is trusted infrastructure bound once at the composition root. Its
+canonical-authority comparison and reservation insert must execute in one serializable
+transaction or an equivalent single linearizable operation. TypeScript and factory
+validation cannot prove that backend property; supplying a conforming adapter is a
+host-composition requirement. The Harness invokes it exactly once. Any internal
+serialization retry is adapter-private and must preserve the identical request and
+atomic semantics.
+
+The Harness derives four lowercase SHA-256 digests with the repository canonical JSON
+rule:
+
+```text
+preimage = UTF8(domain + "\n" + canonical_json(strict_parse(value)))
+
+agent-builder/digest/agent-call-reservation-run-context/v1
+  -> strict RunContextEvidencePayload
+
+agent-builder/digest/agent-call-reservation-action/v1
+  -> complete strict AgentCallRuntimeAction
+
+agent-builder/digest/agent-call-reservation-draft/v1
+  -> strict AuthorizedChildRunContextDraft
+
+agent-builder/digest/agent-call-authorization-reservation/v1
+  -> strict AgentCallAuthorizationReservationBindingV1
+```
+
+The strict reservation binding contains the unchanged five-field `EdgeSubjectV1`, the
+Step-14 expected authority revision and approval digest, verified `current_run_id`, all
+three component digests, exact original `authorization_time`, and one derived
+`authorization_valid_until_exclusive`. `reservation_id` is the fourth digest over that
+complete binding and is never accepted from runtime input or trusted context.
+
+The reservation deadline is the earliest absolute expiry among the runtime binding,
+acting lifecycle evidence, run-context evidence, canonical-matching approval authority
+evidence, and callee lifecycle evidence. Duplicate canonical approval decisions may
+carry independently renewed Step-13 leases. After every relevant artifact has passed
+its own Step-13 checks and currency filtering, the approval contribution uses the
+maximum matching fresh-until instant because any one valid authority lease is
+sufficient. The final deadline then takes the minimum against every other required
+expiry. This rule is independent of presentation order.
+
+The derived deadline is rendered exactly with ECMAScript `Date.prototype.toISOString()`
+for the integer epoch-millisecond minimum: UTC, `Z`, and exactly three fractional
+digits. The adapter uses its authoritative transaction instant and writes no
+reservation when that instant is at or beyond the half-open deadline.
+
+The strict adapter result is one of:
+
+```text
+reserved { receipt }
+already_reserved { receipt }
+subject_absent { observed_at }
+authority_revoked { observed_at, current_authority_revision }
+authority_superseded {
+  observed_at,
+  current_authority_revision,
+  current_approval_digest
+}
+authorization_window_expired { observed_at }
+unavailable { condition: store_error }
+```
+
+The adapter checks an existing `reservation_id` first. An exact stored binding returns
+the original receipt, which recovers a reservation whose first response was lost. A
+stored binding mismatch is untrustworthy. For a new reservation, missing authority is
+absent; a lower current revision or a same-revision digest/status mismatch is
+untrustworthy; a higher revision that revokes the same expected digest is revoked; all
+other higher-revision or different-digest states are superseded. Exact expected
+revision plus digest plus active status is eligible for the deadline check and insert.
+
+The local receipt echoes every binding field plus `reservation_id` and the
+store-authoritative `reserved_at`. The Harness recomputes the identifier, requires
+every echo to match, and evaluates:
+
+```text
+authorization_time <= reserved_at < authorization_valid_until_exclusive
+```
+
+Only `reserved` and valid `already_reserved` return an allowed agent call. The receipt
+is a peer of `child_run_context_draft`, never part of it. It is host/store-local and
+non-portable. An exact retry may reconstruct an existing logical reservation after
+authority later changes or the original window closes; that does not prove the receipt
+is still safe to execute.
+
+Step 14 and Step 15 are complementary rather than competing truths. Step 14 performs
+one historical admission read as of exact `authorization_time`, selects the canonical
+approval bytes, and supplies expected revision and digest. Step 15 performs one final
+atomic comparison at its later transaction instant and inserts only if that exact
+authority remains active and every bound lease remains open.
+
+New fail-closed reasons are:
+
+```text
+agent_call_authorization_reservation_not_current
+  condition: subject_absent | authority_superseded
+
+agent_call_authorization_reservation_revoked
+
+agent_call_authorization_reservation_window_expired
+
+agent_call_authorization_reservation_indeterminate
+  condition: timeout | adapter_error | store_error | response_untrustworthy
+```
+
+Reservation is not dispatch or consumption. Step 15 proves at most one logical local
+reservation per deterministic authorization binding. It does not prove portable
+receipt redemption, execution completion, or at-most-once execution.
+
 Known v0.1 boundaries:
 
 - Signed lifecycle freshness bounds evidence age but does not prove synchronous
   current state after `asserted_at`; there is no lifecycle store lookup.
 - A presented decided call-graph approval now has authenticated origin, integrity, a
   maximum 300-second authority lease, and canonical current/non-revoked status as of
-  `authorization_time`. The harness does not prove that the authority stays unrevoked
-  until execution or that the same assertion is single-use.
+  `authorization_time`. A successful agent-call authorization also has one atomic local
+  reservation while every required lease is still open, but the Harness does not prove
+  that its receipt stays unrevoked or is redeemed only once by a later executor.
 - Parent context, `current_run_id`, cycle chain, depth, and remaining budgets are now
   authenticated as presented evidence. The harness still does not mutate or return a
   consumed parent context for later sibling calls, so aggregate sibling spend-down is
   not proven.
 - Process liveness is not proven. That requires heartbeat evidence, a runtime store,
-  and a runtime lookup, none of which this slice performs.
+  and a lifecycle-specific runtime lookup. The Step-15 reservation adapter provides
+  none of those liveness semantics.
 - Key issuance, private-key custody, KMS/HSM, CRL or other key-revocation distribution,
-  nonce replay storage, channel resolution, and real execution remain out of scope.
+  parent-budget consumption, sibling spend-down/replay, tool-call reservation, receipt
+  redemption, channel resolution, and real execution remain out of scope.
 
 ## 11. Drift Detection and Revocation Loop
 

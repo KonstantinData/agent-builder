@@ -4,10 +4,12 @@ import {
   CALLEE_CALLABLE_STATES,
   RUNTIME_EXECUTABLE_STATES,
   createRuntimeAuthorizer,
+  type AgentCallAuthorizationReservationAdapter,
   type CanonicalEdgeAuthorityResolver,
 } from "../../src/runtime/authorize-runtime-action.js";
 import { computeCallGraphEdgeApprovalDecisionDigest } from "../../src/runtime/edge-approval-digest.js";
 import { DecidedCallGraphEdgeApprovalSchema } from "../../src/schema/approval-artifact.js";
+import type { AgentCallAuthorizationReservationRequestV1 } from "../../src/schema/agent-call-authorization-reservation.js";
 import { AgentSpecContentSchema, type AgentSpecContent } from "../../src/schema/agent-spec-content.js";
 import { LifecycleStateSchema } from "../../src/schema/agent-spec-runtime-metadata.js";
 import { CallContextSchema, type CallContext } from "../../src/schema/call-context.js";
@@ -154,14 +156,27 @@ function defaultCanonicalAuthorityResolver(
   };
 }
 
+const defaultAuthorizationReservationAdapter: AgentCallAuthorizationReservationAdapter =
+  async (request) => ({
+    kind: "reserved",
+    receipt: {
+      ...request,
+      reservedAt: request.authorizationTime,
+    },
+  });
+
 async function authorizeRuntimeActionWithContext(
   input: RuntimeAuthorizationInput,
   context: TrustedRuntimeAuthorizationContext,
   resolver: CanonicalEdgeAuthorityResolver = defaultCanonicalAuthorityResolver(input),
+  reservationAdapter: AgentCallAuthorizationReservationAdapter =
+    defaultAuthorizationReservationAdapter,
 ) {
   return createRuntimeAuthorizer({
     canonicalAuthorityResolver: resolver,
     timeoutPolicy: { timeoutMs: 1_000 },
+    authorizationReservationAdapter: reservationAdapter,
+    authorizationReservationTimeoutPolicy: { timeoutMs: 1_000 },
   }).authorizeRuntimeAction(input, context);
 }
 
@@ -169,11 +184,22 @@ async function authorizeRuntimeAction(
   input: RuntimeAuthorizationInput,
   overrides: Partial<TrustedRuntimeAuthorizationContext> = {},
   resolver: CanonicalEdgeAuthorityResolver = defaultCanonicalAuthorityResolver(input),
+  reservationAdapter: AgentCallAuthorizationReservationAdapter =
+    defaultAuthorizationReservationAdapter,
 ) {
   return await authorizeRuntimeActionWithContext(input, {
     ...authorizationContext,
     ...overrides,
-  }, resolver);
+  }, resolver, reservationAdapter);
+}
+
+async function authorizeWithReservationAdapter(
+  input: RuntimeAuthorizationInput,
+  reservationAdapter: AgentCallAuthorizationReservationAdapter,
+  overrides: Partial<TrustedRuntimeAuthorizationContext> = {},
+  resolver: CanonicalEdgeAuthorityResolver = defaultCanonicalAuthorityResolver(input),
+) {
+  return authorizeRuntimeAction(input, overrides, resolver, reservationAdapter);
 }
 
 function callContext(overrides: Record<string, unknown> = {}): CallContext {
@@ -1091,7 +1117,7 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     ).toMatchObject({ reason: { type: "run_context_invalid" } });
   });
 
-  it("is stateless and therefore allows identical sibling presentations deterministically", async () => {
+  it("derives identical logical reservation output for identical presentations", async () => {
     const input = agentInput();
     const first = await authorizeRuntimeAction(input);
     const second = await authorizeRuntimeAction(input);
@@ -1202,7 +1228,7 @@ describe("authorizeRuntimeAction tool semantics", () => {
 
 describe("authorizeRuntimeAction agent calls", () => {
   it("allows an approved agent call and returns an unsigned child run-context draft", async () => {
-    expect(await authorizeRuntimeAction(agentInput())).toEqual({
+    expect(await authorizeRuntimeAction(agentInput())).toMatchObject({
       outcome: "allowed",
       actionType: "agent_call",
       childRunContextDraft: {
@@ -2021,6 +2047,8 @@ describe("authorizeRuntimeAction Step 14 canonical edge authority", () => {
       createRuntimeAuthorizer({
         canonicalAuthorityResolver: resolver,
         timeoutPolicy: { timeoutMs: 1 },
+        authorizationReservationAdapter: defaultAuthorizationReservationAdapter,
+        authorizationReservationTimeoutPolicy: { timeoutMs: 1 },
       }),
     ).not.toThrow();
     for (const timeoutMs of [0, 1.5, 2_147_483_648]) {
@@ -2028,6 +2056,8 @@ describe("authorizeRuntimeAction Step 14 canonical edge authority", () => {
         createRuntimeAuthorizer({
           canonicalAuthorityResolver: resolver,
           timeoutPolicy: { timeoutMs },
+          authorizationReservationAdapter: defaultAuthorizationReservationAdapter,
+          authorizationReservationTimeoutPolicy: { timeoutMs: 1 },
         }),
       ).toThrow(TypeError);
     }
@@ -2263,6 +2293,8 @@ describe("authorizeRuntimeAction Step 14 canonical edge authority", () => {
       const authorizer = createRuntimeAuthorizer({
         canonicalAuthorityResolver: resolver,
         timeoutPolicy: { timeoutMs: 10 },
+        authorizationReservationAdapter: defaultAuthorizationReservationAdapter,
+        authorizationReservationTimeoutPolicy: { timeoutMs: 10 },
       });
       const result = authorizer.authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [current] }),
@@ -2277,6 +2309,348 @@ describe("authorizeRuntimeAction Step 14 canonical edge authority", () => {
         },
       });
       expect(resolver).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("authorizeRuntimeAction Step 15 agent-call authorization reservation", () => {
+  function reservedResult(
+    request: AgentCallAuthorizationReservationRequestV1,
+    kind: "reserved" | "already_reserved" = "reserved",
+  ) {
+    return {
+      kind,
+      receipt: {
+        ...request,
+        reservedAt: request.authorizationTime,
+      },
+    };
+  }
+
+  it("binds the host reservation adapter and its strict timeout policy at construction", () => {
+    const input = agentInput();
+    const resolver = defaultCanonicalAuthorityResolver(input);
+    expect(() =>
+      createRuntimeAuthorizer({
+        canonicalAuthorityResolver: resolver,
+        timeoutPolicy: { timeoutMs: 1 },
+        authorizationReservationAdapter: defaultAuthorizationReservationAdapter,
+        authorizationReservationTimeoutPolicy: { timeoutMs: 1 },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      createRuntimeAuthorizer({
+        canonicalAuthorityResolver: resolver,
+        timeoutPolicy: { timeoutMs: 1 },
+        authorizationReservationAdapter: undefined as unknown as AgentCallAuthorizationReservationAdapter,
+        authorizationReservationTimeoutPolicy: { timeoutMs: 1 },
+      }),
+    ).toThrow(TypeError);
+
+    for (const timeoutMs of [0, 1.5, 2_147_483_648]) {
+      expect(() =>
+        createRuntimeAuthorizer({
+          canonicalAuthorityResolver: resolver,
+          timeoutPolicy: { timeoutMs: 1 },
+          authorizationReservationAdapter: defaultAuthorizationReservationAdapter,
+          authorizationReservationTimeoutPolicy: { timeoutMs },
+        }),
+      ).toThrow(TypeError);
+    }
+  });
+
+  it("performs exactly one final reservation with the complete deterministic binding", async () => {
+    const input = agentInput();
+    const resolver = vi.fn<CanonicalEdgeAuthorityResolver>(
+      defaultCanonicalAuthorityResolver(input),
+    );
+    const adapter = vi.fn<AgentCallAuthorizationReservationAdapter>(async (request) =>
+      reservedResult(request),
+    );
+
+    const result = await authorizeWithReservationAdapter(input, adapter, {}, resolver);
+    expect(result).toMatchObject({
+      outcome: "allowed",
+      actionType: "agent_call",
+      childRunContextDraft: {
+        calleeSpecId: "spec-web-search",
+        callContext: { parentRunId: "run-current" },
+      },
+      localAuthorizationReservationReceipt: {
+        currentRunId: "run-current",
+        expectedAuthorityRevision: 1,
+        authorizationTime: authorizationContext.authorizationTime,
+        authorizationValidUntilExclusive: "2026-07-23T13:04:00.000Z",
+      },
+    });
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(adapter).toHaveBeenCalledTimes(1);
+
+    const request = adapter.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      subject: {
+        callerSpecId: "spec-crm-enricher",
+        callerVersion: "1.0.0",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+        trustDomainId: "domain-sales",
+      },
+      expectedAuthorityRevision: 1,
+      currentRunId: "run-current",
+      authorizationTime: "2026-07-23T13:00:00Z",
+      authorizationValidUntilExclusive: "2026-07-23T13:04:00.000Z",
+    });
+    for (const digest of [
+      request?.reservationId,
+      request?.expectedApprovalDigest,
+      request?.runContextDigest,
+      request?.actionDigest,
+      request?.childRunContextDraftDigest,
+    ]) {
+      expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it("uses the freshest canonical-matching approval lease without array-order selection", async () => {
+    const olderLease = edgeApproval({}, {}, {
+      assertedAt: "2026-07-23T12:58:00Z",
+      freshnessTtl: 300,
+    });
+    const newerLease = edgeApproval({}, {}, {
+      assertedAt: "2026-07-23T12:59:00Z",
+      freshnessTtl: 300,
+    });
+    const requests: AgentCallAuthorizationReservationRequestV1[] = [];
+    const adapter: AgentCallAuthorizationReservationAdapter = async (request) => {
+      requests.push(request);
+      return reservedResult(request);
+    };
+
+    for (const approvals of [
+      [olderLease, newerLease],
+      [newerLease, olderLease],
+    ]) {
+      const input = agentInputWithFreshSupportingEvidence("2026-07-23T13:00:00Z", approvals);
+      expect(
+        await authorizeWithReservationAdapter(input, adapter),
+      ).toMatchObject({ outcome: "allowed" });
+    }
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.authorizationValidUntilExclusive).toBe(
+      "2026-07-23T13:04:00.000Z",
+    );
+    expect(requests[1]).toEqual(requests[0]);
+  });
+
+  it("never reserves tool calls or agent calls blocked by any earlier pure guard", async () => {
+    const adapter = vi.fn<AgentCallAuthorizationReservationAdapter>(async () => {
+      throw new Error("must not be called");
+    });
+
+    expect(await authorizeWithReservationAdapter(baseInput(), adapter)).toEqual({
+      outcome: "allowed",
+      actionType: "tool_call",
+    });
+
+    for (const input of [
+      agentInput({ attestedEdgeApprovals: [] }),
+      agentInput({ attestedEdgeApprovals: [edgeApproval({ requiresHumanGate: true })] }),
+      agentInput({ attestedEdgeApprovals: [edgeApproval({ allowedIntents: ["delegate"] })] }),
+      agentInput({ calleeLifecycleEvidence: mutateSignature(lifecycleEvidence("callee")) }),
+      agentInput({
+        runContextEvidence: runContextEvidence(runtimeSpec, {
+          callContext: callContext({ remainingDepth: 0 }),
+        }),
+      }),
+      agentInput({
+        action: {
+          ...agentAction,
+          childBudget: { callBudget: 4, tokenBudget: 5_000, timeBudget: 10_000 },
+        },
+      }),
+    ]) {
+      expect((await authorizeWithReservationAdapter(input, adapter)).outcome).toBe("blocked");
+    }
+    const current = edgeApproval();
+    const revokedAtAdmission: CanonicalEdgeAuthorityResolver = async (request) => ({
+      kind: "found",
+      subject: request.subject,
+      asOf: request.asOf,
+      observedAt: request.asOf,
+      record: {
+        subject: request.subject,
+        authorityRevision: 2,
+        approvalDigest: computeCallGraphEdgeApprovalDecisionDigest(current.payload.approval),
+        status: "revoked",
+      },
+    });
+    expect(
+      await authorizeWithReservationAdapter(
+        agentInput({ attestedEdgeApprovals: [current] }),
+        adapter,
+        {},
+        revokedAtAdmission,
+      ),
+    ).toMatchObject({ reason: { type: "call_graph_edge_approval_revoked" } });
+    expect(adapter).not.toHaveBeenCalled();
+  });
+
+  it("maps final authority, deadline, and store outcomes with deterministic reasons", async () => {
+    const cases: Array<{
+      result: (request: AgentCallAuthorizationReservationRequestV1) => unknown;
+      expected: object;
+    }> = [
+      {
+        result: (request) => ({ kind: "subject_absent", observedAt: request.authorizationTime }),
+        expected: {
+          type: "agent_call_authorization_reservation_not_current",
+          condition: "subject_absent",
+        },
+      },
+      {
+        result: (request) => ({
+          kind: "authority_revoked",
+          observedAt: request.authorizationTime,
+          currentAuthorityRevision: request.expectedAuthorityRevision + 1,
+        }),
+        expected: { type: "agent_call_authorization_reservation_revoked" },
+      },
+      {
+        result: (request) => ({
+          kind: "authority_superseded",
+          observedAt: request.authorizationTime,
+          currentAuthorityRevision: request.expectedAuthorityRevision + 1,
+          currentApprovalDigest: "f".repeat(64),
+        }),
+        expected: {
+          type: "agent_call_authorization_reservation_not_current",
+          condition: "authority_superseded",
+        },
+      },
+      {
+        result: (request) => ({
+          kind: "authorization_window_expired",
+          observedAt: request.authorizationValidUntilExclusive,
+        }),
+        expected: { type: "agent_call_authorization_reservation_window_expired" },
+      },
+      {
+        result: () => ({ kind: "unavailable", condition: "store_error" }),
+        expected: {
+          type: "agent_call_authorization_reservation_indeterminate",
+          condition: "store_error",
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const adapter: AgentCallAuthorizationReservationAdapter = async (request) =>
+        testCase.result(request);
+      expect(
+        await authorizeWithReservationAdapter(agentInput(), adapter),
+      ).toEqual({ outcome: "blocked", reason: testCase.expected });
+    }
+  });
+
+  it("accepts an exact already-reserved retry and rejects receipt or observation drift", async () => {
+    const exactRetry: AgentCallAuthorizationReservationAdapter = async (request) =>
+      reservedResult(request, "already_reserved");
+    expect(
+      await authorizeWithReservationAdapter(agentInput(), exactRetry),
+    ).toMatchObject({
+      outcome: "allowed",
+      actionType: "agent_call",
+      localAuthorizationReservationReceipt: {
+        authorizationTime: authorizationContext.authorizationTime,
+      },
+    });
+
+    const untrustworthyCases: AgentCallAuthorizationReservationAdapter[] = [
+      async (request) => ({ ...reservedResult(request), extra: true }),
+      async (request) => ({
+        ...reservedResult(request),
+        receipt: { ...reservedResult(request).receipt, reservationId: "0".repeat(64) },
+      }),
+      async (request) => ({
+        ...reservedResult(request),
+        receipt: {
+          ...reservedResult(request).receipt,
+          reservedAt: request.authorizationValidUntilExclusive,
+        },
+      }),
+      async (request) => ({
+        kind: "subject_absent",
+        observedAt: "2026-07-23T12:59:59.999Z",
+      }),
+      async (request) => ({
+        kind: "authority_revoked",
+        observedAt: request.authorizationTime,
+        currentAuthorityRevision: request.expectedAuthorityRevision,
+      }),
+      async (request) => ({
+        kind: "authority_superseded",
+        observedAt: request.authorizationTime,
+        currentAuthorityRevision: request.expectedAuthorityRevision - 1,
+        currentApprovalDigest: request.expectedApprovalDigest,
+      }),
+      async (request) => ({
+        kind: "authorization_window_expired",
+        observedAt: request.authorizationTime,
+      }),
+    ];
+
+    for (const adapter of untrustworthyCases) {
+      expect(
+        await authorizeWithReservationAdapter(agentInput(), adapter),
+      ).toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "agent_call_authorization_reservation_indeterminate",
+          condition: "response_untrustworthy",
+        },
+      });
+    }
+  });
+
+  it("maps adapter exceptions and timeout as indeterminate without retry", async () => {
+    expect(
+      await authorizeWithReservationAdapter(agentInput(), async () => {
+        throw new Error("private adapter detail");
+      }),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "agent_call_authorization_reservation_indeterminate",
+        condition: "adapter_error",
+      },
+    });
+
+    vi.useFakeTimers();
+    try {
+      const input = agentInput();
+      const adapter = vi.fn<AgentCallAuthorizationReservationAdapter>(
+        () => new Promise(() => undefined),
+      );
+      const authorizer = createRuntimeAuthorizer({
+        canonicalAuthorityResolver: defaultCanonicalAuthorityResolver(input),
+        timeoutPolicy: { timeoutMs: 10 },
+        authorizationReservationAdapter: adapter,
+        authorizationReservationTimeoutPolicy: { timeoutMs: 10 },
+      });
+      const pending = authorizer.authorizeRuntimeAction(input, authorizationContext);
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(pending).resolves.toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "agent_call_authorization_reservation_indeterminate",
+          condition: "timeout",
+        },
+      });
+      expect(adapter).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
