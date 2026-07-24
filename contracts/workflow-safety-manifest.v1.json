@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "workflow-safety-manifest/1",
+  "workflows": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "blobSha256": "21f31de2e3f81260aad6b1b5f87b515f50b45008a4b2cc934c249c28d3a59cbe",
+      "classification": "verification_only",
+      "requiredChecks": [
+        "verify"
+      ]
+    }
+  ],
+  "manifestDigest": "cf76aa31ea735049165136709028f69e07c82b80c1ee3eb40a0078ef61e8553d"
+}

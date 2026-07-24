@@ -1,0 +1,99 @@
+{
+  "schemaVersion": "host-workflow-adapters-contract/1",
+  "contractVersion": "0.1",
+  "baseRevision": "ce8c4ba614347f408715cdb3fe0dfc1ce128466a",
+  "lockedScope": {
+    "allowedPaths": [
+      "README.md",
+      "contracts/host-workflow-adapters-v0.1.json",
+      "contracts/workflow-safety-manifest.v1.json",
+      "docs/architecture/autonomous-roadmap-orchestration-v0.1.md",
+      "docs/architecture/host-workflow-adapters-v0.1.md",
+      "src/orchestration/",
+      "tests/orchestration/"
+    ],
+    "forbiddenSurfaces": [
+      ".github/",
+      "package.json",
+      "pnpm-lock.yaml",
+      "roadmap/",
+      "secrets",
+      "deployment-or-release-configuration"
+    ],
+    "capabilityEffect": "reduce_or_preserve",
+    "deploymentEffect": "none"
+  },
+  "runtimeContractProfile": {
+    "schemaVersion": "locked-step-contract/2",
+    "controllerAddendum": {
+      "schemaVersion": "host-workflow-controller/1",
+      "maxTransitionsPerInvocation": 32,
+      "lockMode": "exclusive_no_wait_no_eviction",
+      "automatedThroughPhase": "step_complete",
+      "externalImplementationMode": "external_attended_readback_only",
+      "branchDeletionAllowed": false
+    }
+  },
+  "workflowSafetyManifest": {
+    "path": "contracts/workflow-safety-manifest.v1.json",
+    "manifestDigest": "cf76aa31ea735049165136709028f69e07c82b80c1ee3eb40a0078ef61e8553d"
+  },
+  "requiredChecks": [
+    "verify"
+  ],
+  "maxCiReadsPerStep": 3,
+  "featureRefTemplate": "refs/heads/orchestration/{runId}/{stepId}",
+  "featureRefPolicy": {
+    "forceAllowed": false,
+    "deleteAllowed": false,
+    "takeoverAllowed": false,
+    "rebaseAllowed": false,
+    "secondRefAllowed": false
+  },
+  "adapterProtocol": {
+    "externalImplementationMode": "readback_only",
+    "stateChangingPairs": [
+      "verification",
+      "feature_ref",
+      "pull_request",
+      "merge"
+    ],
+    "stateChangingPairRequirement": "invoke_and_readback",
+    "readbackOutcomes": [
+      "settled",
+      "failed",
+      "inconclusive"
+    ],
+    "pendingResumeMode": "readback_only",
+    "missingOrPartialAdapterBehavior": "fail_closed"
+  },
+  "mergePolicy": {
+    "defaultBranchMustBeProtected": true,
+    "unprotectedDefaultBranchOutcome": "merge_authority_missing",
+    "evaluateBeforeMergeInvoke": true,
+    "adminBypassAllowed": false,
+    "forceMergeAllowed": false,
+    "unknownStateBehavior": "fail_closed"
+  },
+  "cleanupMode": "verification_only",
+  "orphanPolicy": {
+    "postPushTerminalFailureRequiresOrphanRefReport": true,
+    "automaticDeletionAllowed": false,
+    "unknownRefTakeoverAllowed": false
+  },
+  "v0.1RealRunnersIncluded": false,
+  "includedImplementation": [
+    "strict_contract_schemas",
+    "pure_policy_evaluators",
+    "persisted_controller_composition",
+    "deterministic_test_fakes"
+  ],
+  "excludedImplementation": [
+    "real_verification_subprocess_runner",
+    "real_git_runner",
+    "real_github_runner",
+    "credential_or_token_custody",
+    "branch_protection_bypass"
+  ],
+  "contractDigest": "e156d8bf9ec2ee62933d20dbfb994096afa11abb1ceee4e0d5cb4b75fee1a39f"
+}

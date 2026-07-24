@@ -9,6 +9,12 @@ current Step 16 candidate. It never turns Claude, a model router, or an implemen
 driver into a Control Plane authority.
 The attended controller advances persisted runs only through a locked contract and then
 returns an explicit external-implementation boundary.
+The separate
+[`Host Workflow Adapter Contract v0.1`](docs/architecture/host-workflow-adapters-v0.1.md)
+extends the persisted composition through `step_complete` using strict injected-adapter
+contracts and deterministic fakes. Its real pinned Claude CLI adapter negotiates the v2
+contract, but it ships no real Git, GitHub, or verification subprocess runner; an
+unprotected default branch blocks merge as `merge_authority_missing` without bypass.
 Its job is not to execute agents directly. It turns builder intent into validated,
 versioned agent specifications, evaluates them against policy, and produces auditable
 approval decisions without deploying or executing the resulting agents.
