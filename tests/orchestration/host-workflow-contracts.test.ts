@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
@@ -41,7 +42,7 @@ const HEAD_SHA = "1234567890abcdef1234567890abcdef12345678";
 const DIGEST_A = "a".repeat(64);
 const DIGEST_B = "b".repeat(64);
 const DIGEST_C = "c".repeat(64);
-const WORKFLOW_SHA256 = "cfda3f0ec624b10599c5a5002285e11374cf178275cfa9c9fa4f3538e03d3d31";
+const WORKFLOW_SHA256 = "21f31de2e3f81260aad6b1b5f87b515f50b45008a4b2cc934c249c28d3a59cbe";
 
 function intentInput() {
   return {
@@ -152,7 +153,7 @@ describe("host workflow run and lock schemas", () => {
 
 describe("workflow safety manifest and repository paths", () => {
   it("reproduces both committed artifact digests from the current workflow bytes", () => {
-    const workflowBytes = readFileSync(".github/workflows/ci.yml");
+    const workflowBytes = execFileSync("git", ["show", "HEAD:.github/workflows/ci.yml"]);
     expect(createHash("sha256").update(workflowBytes).digest("hex")).toBe(WORKFLOW_SHA256);
 
     const manifestArtifact = JSON.parse(
@@ -177,7 +178,7 @@ describe("workflow safety manifest and repository paths", () => {
       schemaVersion: "workflow-safety-manifest/1",
       workflows: value.workflows,
     })).toBe(value.manifestDigest);
-    expect(value.manifestDigest).toBe("09335ea86b39ee2c6f1b026500ae7e5b4faf6c24f1bbdfc37612d16358abbbe1");
+    expect(value.manifestDigest).toBe("cf76aa31ea735049165136709028f69e07c82b80c1ee3eb40a0078ef61e8553d");
     expect(WorkflowSafetyManifestV1Schema.parse(value).workflows).toEqual([{
       path: ".github/workflows/ci.yml",
       blobSha256: WORKFLOW_SHA256,

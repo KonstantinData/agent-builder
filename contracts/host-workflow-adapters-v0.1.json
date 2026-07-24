@@ -36,7 +36,7 @@
   },
   "workflowSafetyManifest": {
     "path": "contracts/workflow-safety-manifest.v1.json",
-    "manifestDigest": "09335ea86b39ee2c6f1b026500ae7e5b4faf6c24f1bbdfc37612d16358abbbe1"
+    "manifestDigest": "cf76aa31ea735049165136709028f69e07c82b80c1ee3eb40a0078ef61e8553d"
   },
   "requiredChecks": [
     "verify"
@@ -95,5 +95,5 @@
     "credential_or_token_custody",
     "branch_protection_bypass"
   ],
-  "contractDigest": "baed38a47cabbdc37e51d4253925ed20c8a38640f4b787c1317bac0b6355372a"
+  "contractDigest": "e156d8bf9ec2ee62933d20dbfb994096afa11abb1ceee4e0d5cb4b75fee1a39f"
 }

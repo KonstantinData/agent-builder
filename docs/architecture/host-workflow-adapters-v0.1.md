@@ -7,14 +7,14 @@ The canonical machine-readable artifacts are:
 
 - `contracts/host-workflow-adapters-v0.1.json`;
 - `contracts/workflow-safety-manifest.v1.json`, identified by manifest digest
-  `09335ea86b39ee2c6f1b026500ae7e5b4faf6c24f1bbdfc37612d16358abbbe1`.
+  `cf76aa31ea735049165136709028f69e07c82b80c1ee3eb40a0078ef61e8553d`.
 
 The standalone adapter contract is identified by digest
-`baed38a47cabbdc37e51d4253925ed20c8a38640f4b787c1317bac0b6355372a`.
+`e156d8bf9ec2ee62933d20dbfb994096afa11abb1ceee4e0d5cb4b75fee1a39f`.
 
 The final runtime `locked-step-contract/2` form was accepted through the real native
 Claude adapter on 2026-07-24 with contract digest
-`5267ee92a1e5836a8b8c23fe6dc6af0ae3ce08a211e082c0ff567a54d1bea159`.
+`50459c0e8daf5e3f6636a06325cbc76f71a8a15fd9834c0b923e9f7d98d3abfd`.
 The adapter verified executable SHA-256
 `9e24fc289828968ce3411fafaee42d4484d3e34b63e873358ede4395aceb1b33`,
 disabled tools, sessions, dynamic settings, slash commands, and MCP, and accepted only
@@ -57,7 +57,9 @@ lifecycle transition.
 
 The only recognized repository workflow is `.github/workflows/ci.yml`, pinned by its
 exact SHA-256 digest
-`cfda3f0ec624b10599c5a5002285e11374cf178275cfa9c9fa4f3538e03d3d31`.
+`21f31de2e3f81260aad6b1b5f87b515f50b45008a4b2cc934c249c28d3a59cbe`.
+The digest is computed over the Git blob bytes, not a platform-translated working-tree
+copy, so Windows CRLF checkout settings cannot change the locked evidence.
 It is classified as `verification_only` and contributes exactly one required check:
 `verify`.
 
