@@ -122,6 +122,18 @@ already-approved, versioned bindings.
     decision or policy fields
   - ignores cryptographically invalid but subject-irrelevant edge evidence while
     failing closed on every selected entry in input order
+  - binds one canonical-authority resolver at the trusted composition root and
+    performs exactly one point-in-time lookup only after at least one relevant
+    `approved` authority candidate passes every Step-13 guard
+  - queries the existing five-field edge subject exactly as of the same injected
+    `authorizationTime` used by binding, lifecycle, run-context, and authority-lease
+    checks; lookup failure, timeout, malformed output, or request/result drift blocks
+    fail-closed without a lease-only fallback
+  - compares fully verified approved candidates with a domain-separated SHA-256
+    digest of the complete decided approval and rejects absent, superseded, or
+    explicitly revoked canonical authority
+  - deduplicates repeated presentation of the same canonical decision and uses the
+    canonical digest to discard lease-fresh superseded decisions before policy guards
   - requires intents to be allowed by both the spec declaration and approved edge
   - matches the opaque `versionOrChannel` lifecycle subject exactly without resolving
     channels
@@ -129,7 +141,8 @@ already-approved, versioned bindings.
     rejecting malformed evidence at the input boundary
   - likewise ignores structurally valid edge approval evidence for tool calls without
     inspecting its key, signature, decision, or policy fields
-  - blocks ambiguous matching edge approvals fail-closed
+  - reserves ambiguous edge blocking for the defense-in-depth case where one digest
+    maps to different canonical decision bytes
   - blocks human-gated edges fail-closed
   - derives an unsigned child run-context draft only for allowed agent calls; an
     external trusted resolver and signer must assign the child identity and authority
@@ -224,15 +237,18 @@ This package intentionally keeps several capabilities out of scope:
   but cannot eliminate the post-assertion revocation window
 - no clock-skew grace for future-dated lifecycle evidence in v0.1
 - no channel resolution or process-liveness claim from lifecycle evidence
-- no proof that a presented, fresh, validly attested call-graph approval is the latest
-  canonical decision, has not been revoked inside its lease window, or is single-use;
-  approval versioning, revocation lookup, and nonce storage remain future slices
+- no claim that canonical edge authority remains unrevoked after the injected
+  `authorizationTime` and until real execution; closing that interval requires a
+  later execution-time or transactional authority boundary
+- no single-use edge authority or nonce consumption; canonical currentness and
+  non-revocation as of `authorizationTime` do not prevent repeated presentation
 - no parent-budget consumption, sibling/nonce replay protection, or proof that a
   presented parent run actually issued a child context; those require a runtime store
   or parent-decision linkage beyond signed run-context integrity
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
-- no runtime authorization from ambiguous matching call-graph edge approvals
+- no array-order selection among matching call-graph approvals; only the canonical
+  decision digest may select the policy-bearing edge
 - no tool-scope containment inference without a structured scope model
 
 These constraints are enforced in code where the current prototype has enough local

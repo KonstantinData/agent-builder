@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { computeContentHash } from "../../src/assembler/content-hash.js";
 import {
   CALLEE_CALLABLE_STATES,
   RUNTIME_EXECUTABLE_STATES,
-  authorizeRuntimeAction as authorizeRuntimeActionWithContext,
+  createRuntimeAuthorizer,
+  type CanonicalEdgeAuthorityResolver,
 } from "../../src/runtime/authorize-runtime-action.js";
+import { computeCallGraphEdgeApprovalDecisionDigest } from "../../src/runtime/edge-approval-digest.js";
 import { DecidedCallGraphEdgeApprovalSchema } from "../../src/schema/approval-artifact.js";
 import { AgentSpecContentSchema, type AgentSpecContent } from "../../src/schema/agent-spec-content.js";
 import { LifecycleStateSchema } from "../../src/schema/agent-spec-runtime-metadata.js";
@@ -113,14 +115,65 @@ function contextWithoutEvidenceKind(
   };
 }
 
-function authorizeRuntimeAction(
+function defaultCanonicalAuthorityResolver(
+  input: RuntimeAuthorizationInput,
+): CanonicalEdgeAuthorityResolver {
+  return async (request) => {
+    const currentApproval = input.attestedEdgeApprovals.find(
+      (evidence) =>
+        evidence.payload.approval.decision === "approved" &&
+        evidence.payload.approval.edge.callerSpecId === request.subject.callerSpecId &&
+        evidence.payload.approval.edge.callerVersion === request.subject.callerVersion &&
+        evidence.payload.approval.edge.calleeSpecId === request.subject.calleeSpecId &&
+        evidence.payload.approval.edge.calleeVersionOrChannel ===
+          request.subject.calleeVersionOrChannel &&
+        evidence.payload.approval.edge.trustDomainId === request.subject.trustDomainId,
+    );
+    if (currentApproval === undefined) {
+      return {
+        kind: "subject_absent",
+        subject: request.subject,
+        asOf: request.asOf,
+        observedAt: request.asOf,
+      };
+    }
+    return {
+      kind: "found",
+      subject: request.subject,
+      asOf: request.asOf,
+      observedAt: request.asOf,
+      record: {
+        subject: request.subject,
+        authorityRevision: 1,
+        approvalDigest: computeCallGraphEdgeApprovalDecisionDigest(
+          currentApproval.payload.approval,
+        ),
+        status: "active",
+      },
+    };
+  };
+}
+
+async function authorizeRuntimeActionWithContext(
+  input: RuntimeAuthorizationInput,
+  context: TrustedRuntimeAuthorizationContext,
+  resolver: CanonicalEdgeAuthorityResolver = defaultCanonicalAuthorityResolver(input),
+) {
+  return createRuntimeAuthorizer({
+    canonicalAuthorityResolver: resolver,
+    timeoutPolicy: { timeoutMs: 1_000 },
+  }).authorizeRuntimeAction(input, context);
+}
+
+async function authorizeRuntimeAction(
   input: RuntimeAuthorizationInput,
   overrides: Partial<TrustedRuntimeAuthorizationContext> = {},
+  resolver: CanonicalEdgeAuthorityResolver = defaultCanonicalAuthorityResolver(input),
 ) {
-  return authorizeRuntimeActionWithContext(input, {
+  return await authorizeRuntimeActionWithContext(input, {
     ...authorizationContext,
     ...overrides,
-  });
+  }, resolver);
 }
 
 function callContext(overrides: Record<string, unknown> = {}): CallContext {
@@ -249,14 +302,14 @@ function mutateSignature<T extends AttestedRuntimeBindingEvidence | AttestedAgen
 }
 
 describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
-  it("allows an exact declared tool call with attested binding and acting lifecycle evidence", () => {
-    expect(authorizeRuntimeAction(baseInput())).toEqual({
+  it("allows an exact declared tool call with attested binding and acting lifecycle evidence", async () => {
+    expect(await authorizeRuntimeAction(baseInput())).toEqual({
       outcome: "allowed",
       actionType: "tool_call",
     });
   });
 
-  it("fails input validation before trusted-context validation", () => {
+  it("fails input validation before trusted-context validation", async () => {
     const valid = baseInput();
     const input = {
       ...valid,
@@ -266,7 +319,7 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
       },
     } as RuntimeAuthorizationInput;
     expect(
-      authorizeRuntimeActionWithContext(input, {
+      await authorizeRuntimeActionWithContext(input, {
         authorizationTime: "not-a-time",
         attestationKeys: [],
       } as TrustedRuntimeAuthorizationContext),
@@ -276,9 +329,9 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     });
   });
 
-  it("requires the trusted context and rejects malformed or duplicate keysets", () => {
+  it("requires the trusted context and rejects malformed or duplicate keysets", async () => {
     // @ts-expect-error Trusted authorization time and keyset are mandatory.
-    expect(authorizeRuntimeActionWithContext(baseInput())).toEqual({
+    expect(await authorizeRuntimeActionWithContext(baseInput())).toEqual({
       outcome: "blocked",
       reason: {
         type: "runtime_authorization_context_invalid",
@@ -304,7 +357,7 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
       },
     ]) {
       expect(
-        authorizeRuntimeActionWithContext(
+        await authorizeRuntimeActionWithContext(
           baseInput({ runtimeBindingEvidence: undefined }),
           context as TrustedRuntimeAuthorizationContext,
         ),
@@ -318,30 +371,30 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     }
   });
 
-  it("rejects legacy mutable runtime metadata at the strict input boundary", () => {
+  it("rejects legacy mutable runtime metadata at the strict input boundary", async () => {
     const input = {
       ...baseInput(),
       metadata: { specId: runtimeSpec.specId, version: runtimeSpec.version, state: "deployed" },
     } as unknown as RuntimeAuthorizationInput;
-    expect(authorizeRuntimeAction(input)).toEqual({
+    expect(await authorizeRuntimeAction(input)).toEqual({
       outcome: "blocked",
       reason: { type: "input_invalid", reason: "schema_validation_failed" },
     });
   });
 
-  it("requires acting lifecycle evidence structurally for every action", () => {
+  it("requires acting lifecycle evidence structurally for every action", async () => {
     const { actingLifecycleEvidence: _ignored, ...input } = baseInput();
     expect(
-      authorizeRuntimeAction(input as RuntimeAuthorizationInput),
+      await authorizeRuntimeAction(input as RuntimeAuthorizationInput),
     ).toEqual({
       outcome: "blocked",
       reason: { type: "input_invalid", reason: "schema_validation_failed" },
     });
   });
 
-  it("blocks missing runtime binding evidence before acting lifecycle evaluation", () => {
+  it("blocks missing runtime binding evidence before acting lifecycle evaluation", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runtimeBindingEvidence: undefined,
           actingLifecycleEvidence: mutateSignature(lifecycleEvidence("acting")),
@@ -360,7 +413,7 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
   it.each([
     ["runtime_binding", "runtimeBindingEvidence"],
     ["acting_lifecycle", "actingLifecycleEvidence"],
-  ] as const)("blocks unknown keys for %s evidence before signature verification", (evidenceKind, field) => {
+  ] as const)("blocks unknown keys for %s evidence before signature verification", async (evidenceKind, field) => {
     const evidence = {
       ...(field === "runtimeBindingEvidence"
         ? runtimeBindingEvidence()
@@ -372,7 +425,7 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
         keyId: "unknown-key",
       },
     };
-    expect(authorizeRuntimeAction(baseInput({ [field]: evidence }))).toEqual({
+    expect(await authorizeRuntimeAction(baseInput({ [field]: evidence }))).toEqual({
       outcome: "blocked",
       reason: { type: "attestation_key_unknown", evidenceKind, keyId: "unknown-key" },
     });
@@ -380,9 +433,9 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
 
   it.each(["runtime_binding", "acting_lifecycle"] as const)(
     "treats a trusted key without `%s` authority as unknown for that evidence kind",
-    (evidenceKind) => {
+    async (evidenceKind) => {
       expect(
-        authorizeRuntimeActionWithContext(
+        await authorizeRuntimeActionWithContext(
           baseInput(),
           contextWithoutEvidenceKind(evidenceKind),
         ),
@@ -400,21 +453,21 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
   it.each([
     ["runtime_binding", "runtimeBindingEvidence"],
     ["acting_lifecycle", "actingLifecycleEvidence"],
-  ] as const)("blocks invalid signatures for %s evidence", (evidenceKind, field) => {
+  ] as const)("blocks invalid signatures for %s evidence", async (evidenceKind, field) => {
     const evidence =
       field === "runtimeBindingEvidence"
         ? mutateSignature(runtimeBindingEvidence())
         : mutateSignature(lifecycleEvidence("acting"));
-    expect(authorizeRuntimeAction(baseInput({ [field]: evidence }))).toEqual({
+    expect(await authorizeRuntimeAction(baseInput({ [field]: evidence }))).toEqual({
       outcome: "blocked",
       reason: { type: "attestation_invalid", evidenceKind, keyId: TEST_ATTESTATION_KEY_ID },
     });
   });
 
-  it("treats a keyId switched to another trusted key as an invalid signature", () => {
+  it("treats a keyId switched to another trusted key as an invalid signature", async () => {
     const evidence = runtimeBindingEvidence();
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runtimeBindingEvidence: {
             ...evidence,
@@ -436,7 +489,7 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     });
   });
 
-  it("verifies binding signatures before artifact subject, hash, and lease guards", () => {
+  it("verifies binding signatures before artifact subject, hash, and lease guards", async () => {
     const evidence = runtimeBindingEvidence(runtimeSpec, {
       specId: "spec-other",
       contentHash: "wrong-hash",
@@ -444,7 +497,7 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
       ttl: 1,
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ runtimeBindingEvidence: mutateSignature(evidence) }),
       ),
     ).toEqual({
@@ -460,9 +513,9 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
   it.each([
     { specId: "spec-other" },
     { version: "9.9.9" },
-  ])("re-sources runtime subject mismatch to the attested artifact: %o", (overrides) => {
+  ])("re-sources runtime subject mismatch to the attested artifact: %o", async (overrides) => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, overrides) }),
       ),
     ).toEqual({
@@ -475,10 +528,10 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     });
   });
 
-  it("blocks a self-inconsistent presented spec contentHash", () => {
+  it("blocks a self-inconsistent presented spec contentHash", async () => {
     const spec = AgentSpecContentSchema.parse({ ...runtimeSpec, contentHash: "self-inconsistent" });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ spec, runtimeBindingEvidence: runtimeBindingEvidence(spec) }),
       ),
     ).toEqual({
@@ -491,9 +544,9 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     });
   });
 
-  it("blocks a validly signed artifact whose contentHash differs from recomputed spec content", () => {
+  it("blocks a validly signed artifact whose contentHash differs from recomputed spec content", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, {
             contentHash: "validly-signed-but-wrong",
@@ -510,13 +563,13 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     });
   });
 
-  it("blocks when recomputed content matches the artifact but not the presented spec hash", () => {
+  it("blocks when recomputed content matches the artifact but not the presented spec hash", async () => {
     const selfInconsistentSpec = AgentSpecContentSchema.parse({
       ...runtimeSpec,
       contentHash: "presented-spec-hash-is-wrong",
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           spec: selfInconsistentSpec,
           runtimeBindingEvidence: runtimeBindingEvidence(selfInconsistentSpec, {
@@ -538,13 +591,13 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     });
   });
 
-  it("detects spec-content mutation even when the presented hashes remain unchanged", () => {
+  it("detects spec-content mutation even when the presented hashes remain unchanged", async () => {
     const mutatedSpec = AgentSpecContentSchema.parse({
       ...runtimeSpec,
       objective: "Tampered objective",
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           spec: mutatedSpec,
           runtimeBindingEvidence: runtimeBindingEvidence(mutatedSpec, {
@@ -555,12 +608,12 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     ).toMatchObject({ reason: { type: "runtime_binding_content_hash_mismatch" } });
   });
 
-  it("evaluates the attested binding over the Step-8 half-open lease", () => {
+  it("evaluates the attested binding over the Step-8 half-open lease", async () => {
     const offsetBinding = runtimeBindingEvidence(runtimeSpec, {
       deployedAt: "2026-07-23T14:30:00+02:00",
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runtimeBindingEvidence: offsetBinding,
           actingLifecycleEvidence: lifecycleEvidence("acting", {
@@ -575,10 +628,10 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
 
     expect(
-      authorizeRuntimeAction(baseInput(), { authorizationTime: "2026-07-23T12:29:59.999Z" }),
+      await authorizeRuntimeAction(baseInput(), { authorizationTime: "2026-07-23T12:29:59.999Z" }),
     ).toMatchObject({ reason: { type: "runtime_binding_not_yet_valid" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T13:29:00Z",
@@ -591,13 +644,13 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
       ),
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
     expect(
-      authorizeRuntimeAction(baseInput(), { authorizationTime: "2026-07-23T13:30:00Z" }),
+      await authorizeRuntimeAction(baseInput(), { authorizationTime: "2026-07-23T13:30:00Z" }),
     ).toMatchObject({ reason: { type: "runtime_binding_expired" } });
   });
 
-  it("lets content-hash failure beat expiry and expiry beat acting lifecycle", () => {
+  it("lets content-hash failure beat expiry and expiry beat acting lifecycle", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, { contentHash: "wrong" }),
         }),
@@ -606,7 +659,7 @@ describe("authorizeRuntimeAction Step 10 evidence boundary", () => {
     ).toMatchObject({ reason: { type: "runtime_binding_content_hash_mismatch" } });
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ actingLifecycleEvidence: mutateSignature(lifecycleEvidence("acting")) }),
         { authorizationTime: "2026-07-23T14:00:00Z" },
       ),
@@ -619,7 +672,7 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
     (state) => !RUNTIME_EXECUTABLE_STATES.some((executableState) => executableState === state),
   );
 
-  it("keeps acting executability distinct and limited to deployed", () => {
+  it("keeps acting executability distinct and limited to deployed", async () => {
     expect(RUNTIME_EXECUTABLE_STATES).toEqual(["deployed"]);
     expect(nonExecutableStates).toEqual([
       "draft",
@@ -631,9 +684,9 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
     ]);
   });
 
-  it.each(nonExecutableStates)("blocks signed acting state `%s` as non-executable", (state) => {
+  it.each(nonExecutableStates)("blocks signed acting state `%s` as non-executable", async (state) => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ actingLifecycleEvidence: lifecycleEvidence("acting", { state }) }),
       ),
     ).toEqual({
@@ -645,9 +698,9 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
   it.each([
     { specId: "spec-other" },
     { versionOrChannel: "stable" },
-  ])("blocks acting lifecycle subject mismatch: %o", (overrides) => {
+  ])("blocks acting lifecycle subject mismatch: %o", async (overrides) => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ actingLifecycleEvidence: lifecycleEvidence("acting", overrides) }),
       ),
     ).toEqual({
@@ -661,23 +714,23 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
     });
   });
 
-  it("checks acting signature before subject, state, and freshness", () => {
+  it("checks acting signature before subject, state, and freshness", async () => {
     const evidence = lifecycleEvidence("acting", {
       specId: "spec-other",
       state: "revoked",
       assertedAt: "2026-07-23T14:00:00Z",
     });
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: mutateSignature(evidence) })),
+      await authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: mutateSignature(evidence) })),
     ).toMatchObject({ reason: { type: "attestation_invalid", evidenceKind: "acting_lifecycle" } });
   });
 
-  it("rejects a callee-domain signature replayed as acting evidence", () => {
+  it("rejects a callee-domain signature replayed as acting evidence", async () => {
     const payload = AgentLifecycleEvidencePayloadSchema.parse({
       ...lifecycleEvidence("acting").payload,
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ actingLifecycleEvidence: attestLifecycle(payload, "callee") }),
       ),
     ).toMatchObject({
@@ -685,30 +738,30 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
     });
   });
 
-  it("treats acting freshness as a half-open interval with no skew grace", () => {
+  it("treats acting freshness as a half-open interval with no skew grace", async () => {
     const assertedAt = "2026-07-23T13:00:00Z";
     const evidence = lifecycleEvidence("acting", { assertedAt, freshnessTtl: 300 });
     const freshRunContext = runContextEvidence(runtimeSpec, { assertedAt, freshnessTtl: 300 });
 
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
+      await authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
         authorizationTime: assertedAt,
       }),
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
+      await authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
         authorizationTime: "2026-07-23T12:59:59.999Z",
       }),
     ).toMatchObject({
       reason: { type: "lifecycle_evidence_not_fresh", role: "acting", condition: "from_future" },
     });
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
+      await authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
         authorizationTime: "2026-07-23T13:04:59.999Z",
       }),
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
     expect(
-      authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
+      await authorizeRuntimeAction(baseInput({ actingLifecycleEvidence: evidence, runContextEvidence: freshRunContext }), {
         authorizationTime: "2026-07-23T13:05:00Z",
       }),
     ).toMatchObject({
@@ -716,9 +769,9 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
     });
   });
 
-  it("compares lifecycle freshness as absolute instants across offsets", () => {
+  it("compares lifecycle freshness as absolute instants across offsets", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T15:00:00+02:00",
@@ -729,9 +782,9 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
   });
 
-  it("lets non-executable acting state beat invalid freshness", () => {
+  it("lets non-executable acting state beat invalid freshness", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             state: "revoked",
@@ -745,9 +798,9 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
     });
   });
 
-  it("lets acting freshness beat call-context and action failures", () => {
+  it("lets acting freshness beat call-context and action failures", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T12:00:00Z",
@@ -766,13 +819,13 @@ describe("authorizeRuntimeAction acting lifecycle", () => {
 });
 
 describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
-  it("accepts both valid root and child run topology", () => {
-    expect(authorizeRuntimeAction(baseInput())).toEqual({
+  it("accepts both valid root and child run topology", async () => {
+    expect(await authorizeRuntimeAction(baseInput())).toEqual({
       outcome: "allowed",
       actionType: "tool_call",
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: runContextEvidence(runtimeSpec, {
             currentRunId: "run-root",
@@ -783,9 +836,9 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
   });
 
-  it("maps missing key purpose and invalid signatures to generic attestation reasons", () => {
+  it("maps missing key purpose and invalid signatures to generic attestation reasons", async () => {
     expect(
-      authorizeRuntimeAction(baseInput(), contextWithoutEvidenceKind("run_context")),
+      await authorizeRuntimeAction(baseInput(), contextWithoutEvidenceKind("run_context")),
     ).toEqual({
       outcome: "blocked",
       reason: {
@@ -795,7 +848,7 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
       },
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: mutateSignature(runContextEvidence()),
         }),
@@ -810,10 +863,10 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     });
   });
 
-  it("rejects a lifecycle-domain signature replayed as run-context evidence", () => {
+  it("rejects a lifecycle-domain signature replayed as run-context evidence", async () => {
     const evidence = runContextEvidence();
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: {
             payload: evidence.payload,
@@ -839,9 +892,9 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     { specId: "spec-other" },
     { version: "9.9.9" },
     { contentHash: "f".repeat(64) },
-  ])("binds the signed run context to the exact acting subject: %s", (payloadOverride) => {
+  ])("binds the signed run context to the exact acting subject: %s", async (payloadOverride) => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: runContextEvidence(runtimeSpec, payloadOverride),
         }),
@@ -856,11 +909,11 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     });
   });
 
-  it("isolates cross-trust-domain replay at the run-context content-hash join", () => {
+  it("isolates cross-trust-domain replay at the run-context content-hash join", async () => {
     const domainBSpec = specFixture({ trustDomainId: "domain-operations" });
     expect(domainBSpec.contentHash).not.toBe(runtimeSpec.contentHash);
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           spec: domainBSpec,
           runtimeBindingEvidence: runtimeBindingEvidence(domainBSpec),
@@ -881,24 +934,24 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     });
   });
 
-  it("uses a half-open run-context freshness window with no skew grace", () => {
+  it("uses a half-open run-context freshness window with no skew grace", async () => {
     const assertedAt = "2026-07-23T13:00:00Z";
     const evidence = runContextEvidence(runtimeSpec, { assertedAt, freshnessTtl: 300 });
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ runContextEvidence: evidence }),
         { authorizationTime: assertedAt },
       ),
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ runContextEvidence: evidence }),
         { authorizationTime: "2026-07-23T12:59:59.999Z" },
       ),
     ).toMatchObject({ reason: { type: "run_context_not_fresh", condition: "from_future" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", { assertedAt }),
           runContextEvidence: evidence,
@@ -907,7 +960,7 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
       ),
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T13:04:00Z",
@@ -919,9 +972,9 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     ).toMatchObject({ reason: { type: "run_context_not_fresh", condition: "expired" } });
   });
 
-  it("compares run-context freshness as absolute instants across offsets", () => {
+  it("compares run-context freshness as absolute instants across offsets", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: runContextEvidence(runtimeSpec, {
             assertedAt: "2026-07-23T15:00:00+02:00",
@@ -958,9 +1011,9 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
       },
       condition: "parent_equals_current",
     },
-  ] as const)("blocks signed but inconsistent topology: $condition", ({ overrides, condition }) => {
+  ] as const)("blocks signed but inconsistent topology: $condition", async ({ overrides, condition }) => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ runContextEvidence: runContextEvidence(runtimeSpec, overrides) }),
       ),
     ).toEqual({
@@ -969,17 +1022,17 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     });
   });
 
-  it("pins global and run-context guard precedence before action semantics", () => {
+  it("pins global and run-context guard precedence before action semantics", async () => {
     const invalidTopology = runContextEvidence(runtimeSpec, {
       callContext: callContext({ callChain: ["spec-other"] }),
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ runtimeBindingEvidence: undefined, runContextEvidence: invalidTopology }),
       ),
     ).toMatchObject({ reason: { type: "runtime_binding_missing" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T12:00:00Z",
@@ -997,7 +1050,7 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
       }),
     );
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: forged,
           action: { type: "tool_call", toolId: "email.send", scope: "tenant:acme:crm" },
@@ -1006,7 +1059,7 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     ).toMatchObject({ reason: { type: "attestation_invalid", evidenceKind: "run_context" } });
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: runContextEvidence(runtimeSpec, {
             contentHash: "f".repeat(64),
@@ -1018,7 +1071,7 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     ).toMatchObject({ reason: { type: "run_context_subject_mismatch" } });
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: runContextEvidence(runtimeSpec, {
             assertedAt: "2026-07-23T12:00:00Z",
@@ -1029,7 +1082,7 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     ).toMatchObject({ reason: { type: "run_context_not_fresh", condition: "expired" } });
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           runContextEvidence: invalidTopology,
           action: { type: "tool_call", toolId: "email.send", scope: "tenant:acme:crm" },
@@ -1038,10 +1091,10 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
     ).toMatchObject({ reason: { type: "run_context_invalid" } });
   });
 
-  it("is stateless and therefore allows identical sibling presentations deterministically", () => {
+  it("is stateless and therefore allows identical sibling presentations deterministically", async () => {
     const input = agentInput();
-    const first = authorizeRuntimeAction(input);
-    const second = authorizeRuntimeAction(input);
+    const first = await authorizeRuntimeAction(input);
+    const second = await authorizeRuntimeAction(input);
     expect(second).toEqual(first);
     expect(first).toMatchObject({
       outcome: "allowed",
@@ -1061,7 +1114,7 @@ describe("authorizeRuntimeAction Step 12 run-context evidence", () => {
 });
 
 describe("authorizeRuntimeAction tool semantics", () => {
-  it("ignores any structurally valid callee evidence for tool calls", () => {
+  it("ignores any structurally valid callee evidence for tool calls", async () => {
     const evidence = lifecycleEvidence("callee", {
       specId: "spec-foreign",
       versionOrChannel: "stable",
@@ -1069,7 +1122,7 @@ describe("authorizeRuntimeAction tool semantics", () => {
       assertedAt: "2026-07-23T10:00:00Z",
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           calleeLifecycleEvidence: {
             ...mutateSignature(evidence),
@@ -1080,7 +1133,7 @@ describe("authorizeRuntimeAction tool semantics", () => {
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
   });
 
-  it("rejects structurally invalid callee evidence even for tool calls", () => {
+  it("rejects structurally invalid callee evidence even for tool calls", async () => {
     const input = {
       ...baseInput(),
       calleeLifecycleEvidence: {
@@ -1088,16 +1141,16 @@ describe("authorizeRuntimeAction tool semantics", () => {
         attestation: { keyId: "x", signatureBase64: "not-base64" },
       },
     } as unknown as RuntimeAuthorizationInput;
-    expect(authorizeRuntimeAction(input)).toEqual({
+    expect(await authorizeRuntimeAction(input)).toEqual({
       outcome: "blocked",
       reason: { type: "input_invalid", reason: "schema_validation_failed" },
     });
   });
 
-  it("ignores structurally valid edge evidence for tool calls without inspecting its key or signature", () => {
+  it("ignores structurally valid edge evidence for tool calls without inspecting its key or signature", async () => {
     const unknownKey = edgeApproval();
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           attestedEdgeApprovals: [
             {
@@ -1111,7 +1164,7 @@ describe("authorizeRuntimeAction tool semantics", () => {
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
   });
 
-  it("rejects structurally invalid edge evidence even for tool calls", () => {
+  it("rejects structurally invalid edge evidence even for tool calls", async () => {
     const input = {
       ...baseInput(),
       attestedEdgeApprovals: [
@@ -1124,20 +1177,20 @@ describe("authorizeRuntimeAction tool semantics", () => {
         },
       ],
     } as unknown as RuntimeAuthorizationInput;
-    expect(authorizeRuntimeAction(input)).toEqual({
+    expect(await authorizeRuntimeAction(input)).toEqual({
       outcome: "blocked",
       reason: { type: "input_invalid", reason: "schema_validation_failed" },
     });
   });
 
-  it("keeps exact tool declaration and scope checks", () => {
+  it("keeps exact tool declaration and scope checks", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ action: { type: "tool_call", toolId: "email.send", scope: "tenant:acme:crm" } }),
       ),
     ).toEqual({ outcome: "blocked", reason: { type: "tool_not_declared", toolId: "email.send" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({ action: { type: "tool_call", toolId: "crm.enrich", scope: "tenant:acme" } }),
       ),
     ).toEqual({
@@ -1148,8 +1201,8 @@ describe("authorizeRuntimeAction tool semantics", () => {
 });
 
 describe("authorizeRuntimeAction agent calls", () => {
-  it("allows an approved agent call and returns an unsigned child run-context draft", () => {
-    expect(authorizeRuntimeAction(agentInput())).toEqual({
+  it("allows an approved agent call and returns an unsigned child run-context draft", async () => {
+    expect(await authorizeRuntimeAction(agentInput())).toEqual({
       outcome: "allowed",
       actionType: "agent_call",
       childRunContextDraft: {
@@ -1168,23 +1221,23 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("uses a half-open edge-approval authority lease with no skew grace", () => {
+  it("uses a half-open edge-approval authority lease with no skew grace", async () => {
     const authority = edgeApproval({}, {}, { assertedAt: "2026-07-23T13:00:00Z" });
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [authority]),
         { authorizationTime: "2026-07-23T13:00:00Z" },
       ),
     ).toMatchObject({ outcome: "allowed" });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInputWithFreshSupportingEvidence("2026-07-23T13:00:00Z", [authority]),
         { authorizationTime: "2026-07-23T13:04:59.999Z" },
       ),
     ).toMatchObject({ outcome: "allowed" });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInputWithFreshSupportingEvidence("2026-07-23T13:04:00Z", [authority]),
         { authorizationTime: "2026-07-23T13:05:00Z" },
       ),
@@ -1197,7 +1250,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       },
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [authority]),
         { authorizationTime: "2026-07-23T12:59:59.999Z" },
       ),
@@ -1211,28 +1264,28 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("compares edge-approval freshness as absolute instants across offsets", () => {
+  it("compares edge-approval freshness as absolute instants across offsets", async () => {
     const authority = edgeApproval(
       {},
       {},
       { assertedAt: "2026-07-23T14:59:00+02:00" },
     );
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [authority]),
         { authorizationTime: "2026-07-23T13:00:00Z" },
       ),
     ).toMatchObject({ outcome: "allowed" });
   });
 
-  it("requires a decision to exist no later than its authority assertion", () => {
+  it("requires a decision to exist no later than its authority assertion", async () => {
     const equalInstants = edgeApproval(
       {},
       { decidedAt: "2026-07-23T13:00:00Z" },
       { assertedAt: "2026-07-23T15:00:00+02:00" },
     );
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [equalInstants]),
       ),
     ).toMatchObject({ outcome: "allowed" });
@@ -1243,7 +1296,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       { assertedAt: "2026-07-23T12:59:59.999Z" },
     );
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [impossibleTimeline]),
       ),
     ).toEqual({
@@ -1256,7 +1309,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("checks approval causality before freshness for approved and rejected evidence", () => {
+  it("checks approval causality before freshness for approved and rejected evidence", async () => {
     for (const decision of ["approved", "rejected"] as const) {
       const impossibleAndExpired = edgeApproval(
         {},
@@ -1269,7 +1322,7 @@ describe("authorizeRuntimeAction agent calls", () => {
         { assertedAt: "2026-07-23T12:00:00Z", freshnessTtl: 1 },
       );
       expect(
-        authorizeRuntimeAction(
+        await authorizeRuntimeAction(
           agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", [
             impossibleAndExpired,
           ]),
@@ -1285,7 +1338,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     }
   });
 
-  it("validates every relevant authority lease before filtering rejected decisions", () => {
+  it("validates every relevant authority lease before filtering rejected decisions", async () => {
     const freshApproved = edgeApproval();
     const staleRejected = edgeApproval(
       {},
@@ -1301,7 +1354,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       [staleRejected, freshApproved],
     ]) {
       expect(
-        authorizeRuntimeAction(
+        await authorizeRuntimeAction(
           agentInputWithFreshSupportingEvidence("2026-07-23T12:59:00Z", approvals),
         ),
       ).toEqual({
@@ -1315,30 +1368,30 @@ describe("authorizeRuntimeAction agent calls", () => {
     }
   });
 
-  it("ignores stale subject-irrelevant edge evidence and all valid edge evidence for tool calls", () => {
+  it("ignores stale subject-irrelevant edge evidence and all valid edge evidence for tool calls", async () => {
     const irrelevantStale = edgeApproval(
       { calleeSpecId: "spec-foreign" },
       { artifactId: "approval-edge-foreign" },
       { assertedAt: "2026-07-23T12:00:00Z", freshnessTtl: 1 },
     );
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [irrelevantStale, edgeApproval()] }),
       ),
     ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
     expect(
-      authorizeRuntimeAction(baseInput({ attestedEdgeApprovals: [irrelevantStale] })),
+      await authorizeRuntimeAction(baseInput({ attestedEdgeApprovals: [irrelevantStale] })),
     ).toEqual({ outcome: "allowed", actionType: "tool_call" });
   });
 
-  it("keeps binding and run-context guards ahead of edge-approval freshness", () => {
+  it("keeps binding and run-context guards ahead of edge-approval freshness", async () => {
     const staleAuthority = edgeApproval(
       {},
       {},
       { assertedAt: "2026-07-23T12:00:00Z", freshnessTtl: 1 },
     );
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, {
             deployedAt: "2026-07-23T10:00:00Z",
@@ -1349,7 +1402,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       ),
     ).toMatchObject({ reason: { type: "runtime_binding_expired" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           runContextEvidence: runContextEvidence(runtimeSpec, {
             assertedAt: "2026-07-23T12:00:00Z",
@@ -1367,9 +1420,9 @@ describe("authorizeRuntimeAction agent calls", () => {
     { calleeSpecId: "spec-other" },
     { calleeVersionOrChannel: "stable" },
     { trustDomainId: "domain-foreign" },
-  ])("treats a five-field edge subject mismatch as irrelevant: %o", (edgeOverrides) => {
+  ])("treats a five-field edge subject mismatch as irrelevant: %o", async (edgeOverrides) => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [edgeApproval(edgeOverrides)] }),
       ),
     ).toEqual({
@@ -1382,7 +1435,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("never authorizes through tampered join fields", () => {
+  it("never authorizes through tampered join fields", async () => {
     const foreign = edgeApproval({ calleeSpecId: "spec-foreign" });
     const tamperedIntoRelevance = {
       ...foreign,
@@ -1398,7 +1451,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       },
     };
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [tamperedIntoRelevance] }),
       ),
     ).toMatchObject({
@@ -1420,20 +1473,20 @@ describe("authorizeRuntimeAction agent calls", () => {
       },
     };
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [tamperedOutOfRelevance] }),
       ),
     ).toMatchObject({ reason: { type: "call_edge_not_approved" } });
   });
 
-  it("ignores cryptographically invalid irrelevant evidence but verifies every relevant entry", () => {
+  it("ignores cryptographically invalid irrelevant evidence but verifies every relevant entry", async () => {
     const irrelevant = edgeApproval({ calleeSpecId: "spec-foreign" });
     const irrelevantUnknownKey = {
       ...irrelevant,
       attestation: { ...irrelevant.attestation, keyId: "unknown-key" },
     };
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           attestedEdgeApprovals: [
             irrelevantUnknownKey,
@@ -1445,7 +1498,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           attestedEdgeApprovals: [
             edgeApproval(),
@@ -1458,7 +1511,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("uses input order for relevant attestation failures before decision filtering", () => {
+  it("uses input order for relevant attestation failures before decision filtering", async () => {
     const unknownKey = edgeApproval({}, { decision: "rejected", reason: "denied" });
     const withUnknownKey = {
       ...unknownKey,
@@ -1469,14 +1522,14 @@ describe("authorizeRuntimeAction agent calls", () => {
     );
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [withUnknownKey, invalidSignature] }),
       ),
     ).toMatchObject({
       reason: { type: "attestation_key_unknown", evidenceKind: "call_graph_edge_approval" },
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [invalidSignature, withUnknownKey] }),
       ),
     ).toMatchObject({
@@ -1484,29 +1537,29 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("filters only verified rejected decisions before authority evaluation", () => {
+  it("filters only verified rejected decisions before authority evaluation", async () => {
     const rejected = edgeApproval(
       { requiresHumanGate: true },
       { decision: "rejected", reason: "denied" },
     );
     expect(
-      authorizeRuntimeAction(agentInput({ attestedEdgeApprovals: [rejected] })),
+      await authorizeRuntimeAction(agentInput({ attestedEdgeApprovals: [rejected] })),
     ).toMatchObject({ reason: { type: "call_edge_not_approved" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [rejected, edgeApproval()] }),
       ),
     ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
   });
 
-  it("treats a missing or wrong approval key scope identically to an unknown key", () => {
+  it("treats a missing or wrong approval key scope identically to an unknown key", async () => {
     const evidence = edgeApproval();
     const unknownKeyEvidence = {
       ...evidence,
       attestation: { ...evidence.attestation, keyId: "unknown-key" },
     };
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [unknownKeyEvidence] }),
       ),
     ).toEqual({
@@ -1518,7 +1571,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       },
     });
     expect(
-      authorizeRuntimeActionWithContext(
+      await authorizeRuntimeActionWithContext(
         agentInput({ attestedEdgeApprovals: [mutateSignature(edgeApproval())] }),
         contextWithoutEvidenceKind("call_graph_edge_approval"),
       ),
@@ -1532,9 +1585,9 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("keeps lifecycle and approval key purposes independently scoped", () => {
+  it("keeps lifecycle and approval key purposes independently scoped", async () => {
     expect(
-      authorizeRuntimeActionWithContext(
+      await authorizeRuntimeActionWithContext(
         agentInput(),
         contextWithoutEvidenceKind("callee_lifecycle"),
       ),
@@ -1548,10 +1601,10 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("keeps global and declaration guards ahead of edge attestation", () => {
+  it("keeps global and declaration guards ahead of edge attestation", async () => {
     const invalidApproval = mutateSignature(edgeApproval());
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           runtimeBindingEvidence: runtimeBindingEvidence(runtimeSpec, {
             deployedAt: "2026-07-23T10:00:00Z",
@@ -1567,7 +1620,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       calleeSpecId: SpecIdSchema.parse("spec-billing"),
     };
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           action: undeclaredAction,
           attestedEdgeApprovals: [
@@ -1578,9 +1631,9 @@ describe("authorizeRuntimeAction agent calls", () => {
     ).toMatchObject({ reason: { type: "agent_call_not_declared" } });
   });
 
-  it("checks selected approval attestation before policy, cycle, and callee guards", () => {
+  it("checks selected approval attestation before policy, cycle, and callee guards", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           attestedEdgeApprovals: [
             mutateSignature(
@@ -1600,17 +1653,17 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("treats duplicate presentation of the same approved evidence as ambiguous", () => {
+  it("deduplicates repeated presentation of the same canonical approved decision", async () => {
     const evidence = edgeApproval();
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ attestedEdgeApprovals: [evidence, structuredClone(evidence)] }),
       ),
-    ).toMatchObject({ reason: { type: "ambiguous_call_edge_approval" } });
+    ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
   });
 
-  it("requires callee lifecycle evidence only after cycle detection", () => {
-    expect(authorizeRuntimeAction(baseInput({ action: agentAction }))).toEqual({
+  it("requires callee lifecycle evidence only after cycle detection", async () => {
+    expect(await authorizeRuntimeAction(baseInput({ action: agentAction }))).toEqual({
       outcome: "blocked",
       reason: {
         type: "callee_lifecycle_evidence_missing",
@@ -1619,7 +1672,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       },
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         baseInput({
           action: agentAction,
           runContextEvidence: runContextEvidence(runtimeSpec, {
@@ -1635,10 +1688,10 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("maps callee unknown keys and invalid signatures to generic attestation reasons", () => {
+  it("maps callee unknown keys and invalid signatures to generic attestation reasons", async () => {
     const evidence = lifecycleEvidence("callee");
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           calleeLifecycleEvidence: {
             ...evidence,
@@ -1650,7 +1703,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       reason: { type: "attestation_key_unknown", evidenceKind: "callee_lifecycle" },
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ calleeLifecycleEvidence: mutateSignature(evidence) }),
       ),
     ).toMatchObject({ reason: { type: "attestation_invalid", evidenceKind: "callee_lifecycle" } });
@@ -1659,9 +1712,9 @@ describe("authorizeRuntimeAction agent calls", () => {
   it.each([
     { specId: "spec-other" },
     { versionOrChannel: "stable" },
-  ])("blocks exact opaque callee subject mismatch: %o", (overrides) => {
+  ])("blocks exact opaque callee subject mismatch: %o", async (overrides) => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ calleeLifecycleEvidence: lifecycleEvidence("callee", overrides) }),
       ),
     ).toEqual({
@@ -1679,7 +1732,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     (state) => !CALLEE_CALLABLE_STATES.some((callableState) => callableState === state),
   );
 
-  it("keeps callee callability distinct and limited to deployed", () => {
+  it("keeps callee callability distinct and limited to deployed", async () => {
     expect(CALLEE_CALLABLE_STATES).toEqual(["deployed"]);
     expect(nonCallableStates).toEqual([
       "draft",
@@ -1691,9 +1744,9 @@ describe("authorizeRuntimeAction agent calls", () => {
     ]);
   });
 
-  it.each(nonCallableStates)("blocks signed callee state `%s` as not callable", (state) => {
+  it.each(nonCallableStates)("blocks signed callee state `%s` as not callable", async (state) => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ calleeLifecycleEvidence: lifecycleEvidence("callee", { state }) }),
       ),
     ).toEqual({
@@ -1707,9 +1760,9 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("checks callee state before freshness and freshness before depth or budget", () => {
+  it("checks callee state before freshness and freshness before depth or budget", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           calleeLifecycleEvidence: lifecycleEvidence("callee", {
             state: "revoked",
@@ -1723,7 +1776,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     ).toMatchObject({ reason: { type: "callee_state_not_callable" } });
 
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           calleeLifecycleEvidence: lifecycleEvidence("callee", {
             assertedAt: "2026-07-23T10:00:00Z",
@@ -1738,13 +1791,13 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("uses half-open callee freshness with no future skew grace", () => {
+  it("uses half-open callee freshness with no future skew grace", async () => {
     const evidence = lifecycleEvidence("callee", {
       assertedAt: "2026-07-23T13:00:00Z",
       freshnessTtl: 300,
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T12:59:00Z",
@@ -1757,7 +1810,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       reason: { type: "lifecycle_evidence_not_fresh", role: "callee", condition: "from_future" },
     });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T13:00:00Z",
@@ -1774,7 +1827,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       ),
     ).toMatchObject({ outcome: "allowed" });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           actingLifecycleEvidence: lifecycleEvidence("acting", {
             assertedAt: "2026-07-23T13:04:00Z",
@@ -1794,10 +1847,10 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("rejects an acting-domain signature replayed as callee evidence", () => {
+  it("rejects an acting-domain signature replayed as callee evidence", async () => {
     const payload = lifecycleEvidence("callee").payload;
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({ calleeLifecycleEvidence: attestLifecycle(payload, "acting") }),
       ),
     ).toMatchObject({
@@ -1805,10 +1858,10 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
   });
 
-  it("preserves declaration, edge, human-gate, ambiguity, intent, and cycle precedence", () => {
+  it("preserves declaration, edge currency, human-gate, intent, and cycle precedence", async () => {
     const invalidCallee = mutateSignature(lifecycleEvidence("callee"));
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           action: { ...agentAction, calleeSpecId: SpecIdSchema.parse("spec-billing") },
           calleeLifecycleEvidence: invalidCallee,
@@ -1816,29 +1869,31 @@ describe("authorizeRuntimeAction agent calls", () => {
       ),
     ).toMatchObject({ reason: { type: "agent_call_not_declared" } });
     expect(
-      authorizeRuntimeAction(agentInput({ attestedEdgeApprovals: [], calleeLifecycleEvidence: invalidCallee })),
+      await authorizeRuntimeAction(agentInput({ attestedEdgeApprovals: [], calleeLifecycleEvidence: invalidCallee })),
     ).toMatchObject({ reason: { type: "call_edge_not_approved" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           attestedEdgeApprovals: [
-            edgeApproval({ requiresHumanGate: false }),
             edgeApproval({ requiresHumanGate: true }),
+            edgeApproval({ requiresHumanGate: false }),
           ],
           calleeLifecycleEvidence: invalidCallee,
         }),
       ),
     ).toMatchObject({ reason: { type: "human_gate_required" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           attestedEdgeApprovals: [edgeApproval(), edgeApproval({ maxCallsPerRun: 2 })],
           calleeLifecycleEvidence: invalidCallee,
         }),
       ),
-    ).toMatchObject({ reason: { type: "ambiguous_call_edge_approval" } });
+    ).toMatchObject({
+      reason: { type: "attestation_invalid", evidenceKind: "callee_lifecycle" },
+    });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           attestedEdgeApprovals: [edgeApproval({ allowedIntents: ["delegate"] })],
           calleeLifecycleEvidence: invalidCallee,
@@ -1846,7 +1901,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       ),
     ).toMatchObject({ reason: { type: "call_intent_not_allowed" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           runContextEvidence: runContextEvidence(runtimeSpec, {
             callContext: callContext({
@@ -1859,9 +1914,9 @@ describe("authorizeRuntimeAction agent calls", () => {
     ).toMatchObject({ reason: { type: "cycle_detected" } });
   });
 
-  it("preserves depth, call-budget, and child-budget enforcement", () => {
+  it("preserves depth, call-budget, and child-budget enforcement", async () => {
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           runContextEvidence: runContextEvidence(runtimeSpec, {
             callContext: callContext({ remainingDepth: 0 }),
@@ -1870,7 +1925,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       ),
     ).toMatchObject({ reason: { type: "depth_exhausted" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           runContextEvidence: runContextEvidence(runtimeSpec, {
             callContext: callContext({ remainingCallBudget: 0 }),
@@ -1879,7 +1934,7 @@ describe("authorizeRuntimeAction agent calls", () => {
       ),
     ).toMatchObject({ reason: { type: "call_budget_exhausted" } });
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           action: {
             ...agentAction,
@@ -1890,7 +1945,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     ).toMatchObject({ reason: { type: "budget_increase_forbidden" } });
   });
 
-  it("treats a channel as an exact opaque signed subject key", () => {
+  it("treats a channel as an exact opaque signed subject key", async () => {
     const stableSpec = specFixture({
       declaredAgentCalls: [
         {
@@ -1901,7 +1956,7 @@ describe("authorizeRuntimeAction agent calls", () => {
     });
     const stableAction = { ...agentAction, calleeVersionOrChannel: "stable" };
     expect(
-      authorizeRuntimeAction(
+      await authorizeRuntimeAction(
         agentInput({
           spec: stableSpec,
           runtimeBindingEvidence: runtimeBindingEvidence(stableSpec),
@@ -1921,17 +1976,309 @@ describe("authorizeRuntimeAction agent calls", () => {
 });
 
 describe("authorizeRuntimeAction purity", () => {
-  it("is deterministic and mutates neither evidence, keyset, spec, nor call context", () => {
+  it("is deterministic and mutates neither evidence, keyset, spec, nor call context", async () => {
     const input = agentInput();
     const context = structuredClone(authorizationContext);
     const inputSnapshot = structuredClone(input);
     const contextSnapshot = structuredClone(context);
 
-    const first = authorizeRuntimeActionWithContext(input, context);
-    const second = authorizeRuntimeActionWithContext(input, context);
+    const first = await authorizeRuntimeActionWithContext(input, context);
+    const second = await authorizeRuntimeActionWithContext(input, context);
 
     expect(first).toEqual(second);
     expect(input).toEqual(inputSnapshot);
     expect(context).toEqual(contextSnapshot);
+  });
+});
+
+describe("authorizeRuntimeAction Step 14 canonical edge authority", () => {
+  function foundResolverFor(
+    evidence: AttestedCallGraphEdgeApproval,
+    status: "active" | "revoked" = "active",
+  ): CanonicalEdgeAuthorityResolver {
+    return async (request) => ({
+      kind: "found",
+      subject: request.subject,
+      asOf: request.asOf,
+      observedAt: request.asOf,
+      record: {
+        subject: request.subject,
+        authorityRevision: status === "active" ? 3 : 4,
+        approvalDigest: computeCallGraphEdgeApprovalDecisionDigest(
+          evidence.payload.approval,
+        ),
+        status,
+      },
+    });
+  }
+
+  it("binds a valid timeout policy at construction and rejects invalid policies", () => {
+    const resolver: CanonicalEdgeAuthorityResolver = async () => ({
+      kind: "unavailable",
+      condition: "resolver_error",
+    });
+    expect(() =>
+      createRuntimeAuthorizer({
+        canonicalAuthorityResolver: resolver,
+        timeoutPolicy: { timeoutMs: 1 },
+      }),
+    ).not.toThrow();
+    for (const timeoutMs of [0, 1.5, 2_147_483_648]) {
+      expect(() =>
+        createRuntimeAuthorizer({
+          canonicalAuthorityResolver: resolver,
+          timeoutPolicy: { timeoutMs },
+        }),
+      ).toThrow(TypeError);
+    }
+  });
+
+  it("performs no lookup for tool calls, rejected-only history, or Step-13 failures", async () => {
+    const resolver = vi.fn<CanonicalEdgeAuthorityResolver>(async () => {
+      throw new Error("must not be called");
+    });
+
+    expect(await authorizeRuntimeAction(baseInput(), {}, resolver)).toEqual({
+      outcome: "allowed",
+      actionType: "tool_call",
+    });
+    expect(
+      await authorizeRuntimeAction(
+        agentInput({
+          attestedEdgeApprovals: [
+            edgeApproval({}, { decision: "rejected", reason: "denied" }),
+          ],
+        }),
+        {},
+        resolver,
+      ),
+    ).toMatchObject({ reason: { type: "call_edge_not_approved" } });
+    expect(
+      await authorizeRuntimeAction(
+        agentInput({
+          attestedEdgeApprovals: [
+            edgeApproval(
+              {},
+              { decision: "rejected", reason: "denied" },
+              { assertedAt: "2026-07-23T12:00:00Z", freshnessTtl: 1 },
+            ),
+            edgeApproval(),
+          ],
+        }),
+        {},
+        resolver,
+      ),
+    ).toMatchObject({
+      reason: { type: "call_graph_edge_approval_not_fresh", condition: "expired" },
+    });
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("performs one exact-subject lookup as of the trusted authorization time", async () => {
+    const current = edgeApproval();
+    const resolver = vi.fn<CanonicalEdgeAuthorityResolver>(foundResolverFor(current));
+    const asOf = "2026-07-23T15:00:00+02:00";
+
+    expect(
+      await authorizeRuntimeAction(
+        agentInputWithFreshSupportingEvidence(asOf, [
+          edgeApproval({}, {}, { assertedAt: asOf }),
+        ]),
+        { authorizationTime: asOf },
+        resolver,
+      ),
+    ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith({
+      subject: {
+        callerSpecId: "spec-crm-enricher",
+        callerVersion: "1.0.0",
+        calleeSpecId: "spec-web-search",
+        calleeVersionOrChannel: "1.0.0",
+        trustDomainId: "domain-sales",
+      },
+      asOf,
+    });
+  });
+
+  it("distinguishes subject absence, supersession, and revocation", async () => {
+    const current = edgeApproval({}, { artifactId: "approval-current" });
+    const presented = edgeApproval({}, { artifactId: "approval-presented" });
+
+    const subjectAbsent: CanonicalEdgeAuthorityResolver = async (request) => ({
+      kind: "subject_absent",
+      subject: request.subject,
+      asOf: request.asOf,
+      observedAt: request.asOf,
+    });
+    expect(
+      await authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [presented] }),
+        {},
+        subjectAbsent,
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_not_current",
+        condition: "subject_absent",
+      },
+    });
+
+    expect(
+      await authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [presented] }),
+        {},
+        foundResolverFor(current),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "call_graph_edge_approval_not_current",
+        condition: "authority_superseded",
+      },
+    });
+
+    expect(
+      await authorizeRuntimeAction(
+        agentInput({
+          attestedEdgeApprovals: [current],
+          calleeLifecycleEvidence: mutateSignature(lifecycleEvidence("callee")),
+        }),
+        {},
+        foundResolverFor(current, "revoked"),
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: { type: "call_graph_edge_approval_revoked" },
+    });
+  });
+
+  it("selects the lease-fresh canonical decision independent of presentation order", async () => {
+    const superseded = edgeApproval(
+      { maxCallsPerRun: 2 },
+      { artifactId: "approval-superseded" },
+    );
+    const current = edgeApproval(
+      { maxCallsPerRun: 3 },
+      { artifactId: "approval-current" },
+    );
+    const resolver = foundResolverFor(current);
+
+    for (const approvals of [
+      [superseded, current],
+      [current, superseded],
+    ]) {
+      expect(
+        await authorizeRuntimeAction(
+          agentInput({ attestedEdgeApprovals: approvals }),
+          {},
+          resolver,
+        ),
+      ).toMatchObject({ outcome: "allowed", actionType: "agent_call" });
+    }
+  });
+
+  it("maps malformed or misbound lookup observations to response_untrustworthy", async () => {
+    const current = edgeApproval();
+    const cases: CanonicalEdgeAuthorityResolver[] = [
+      async (request) => ({
+        ...(await foundResolverFor(current)(request) as object),
+        extra: true,
+      }),
+      async (request) => ({
+        ...(await foundResolverFor(current)(request) as object),
+        asOf: "2026-07-23T12:59:59.999Z",
+      }),
+      async (request) => ({
+        ...(await foundResolverFor(current)(request) as object),
+        observedAt: "2026-07-23T12:59:59.999Z",
+      }),
+      async (request) => ({
+        ...(await foundResolverFor(current)(request) as object),
+        subject: { ...request.subject, callerVersion: "2.0.0" },
+      }),
+    ];
+
+    for (const resolver of cases) {
+      expect(
+        await authorizeRuntimeAction(
+          agentInput({ attestedEdgeApprovals: [current] }),
+          {},
+          resolver,
+        ),
+      ).toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "approval_authority_lookup_unavailable",
+          condition: "response_untrustworthy",
+        },
+      });
+    }
+  });
+
+  it("preserves closed unavailable conditions and maps resolver failures", async () => {
+    const current = edgeApproval();
+    for (const condition of [
+      "timeout",
+      "resolver_error",
+      "response_untrustworthy",
+    ] as const) {
+      expect(
+        await authorizeRuntimeAction(
+          agentInput({ attestedEdgeApprovals: [current] }),
+          {},
+          async () => ({ kind: "unavailable", condition }),
+        ),
+      ).toEqual({
+        outcome: "blocked",
+        reason: { type: "approval_authority_lookup_unavailable", condition },
+      });
+    }
+
+    expect(
+      await authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [current] }),
+        {},
+        async () => {
+          throw new Error("private resolver detail");
+        },
+      ),
+    ).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "approval_authority_lookup_unavailable",
+        condition: "resolver_error",
+      },
+    });
+  });
+
+  it("fails closed on resolver timeout without retry or fallback", async () => {
+    vi.useFakeTimers();
+    try {
+      const current = edgeApproval();
+      const resolver = vi.fn<CanonicalEdgeAuthorityResolver>(
+        () => new Promise(() => undefined),
+      );
+      const authorizer = createRuntimeAuthorizer({
+        canonicalAuthorityResolver: resolver,
+        timeoutPolicy: { timeoutMs: 10 },
+      });
+      const result = authorizer.authorizeRuntimeAction(
+        agentInput({ attestedEdgeApprovals: [current] }),
+        authorizationContext,
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(result).resolves.toEqual({
+        outcome: "blocked",
+        reason: {
+          type: "approval_authority_lookup_unavailable",
+          condition: "timeout",
+        },
+      });
+      expect(resolver).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

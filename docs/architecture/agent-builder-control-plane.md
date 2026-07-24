@@ -421,10 +421,15 @@ declared call
   -> edge-evidence relevance prefilter over five signed subject fields
   -> every selected approval key known and authorized for its evidence kind
   -> every selected approval signature valid, in input order
+  -> every selected approval decision/assertion causal
+  -> every selected approval authority lease fresh at authorization_time
   -> verified evidence filtered to decision approved
   -> approved edge present
+  -> exactly one canonical-authority lookup as of authorization_time
+  -> lookup response trusted and bound to request
+  -> canonical decision digest current and status active
+  -> canonical duplicate collapse / defensive digest-collision ambiguity
   -> human gate
-  -> ambiguous edge
   -> intent intersection
   -> cycle detection
   -> callee lifecycle evidence present
@@ -442,8 +447,9 @@ The edge prefilter is relevance-only: it may read the structurally validated sig
 join fields, but no decision, human-gate, intent, data-share, depth, or budget field
 before every selected artifact has passed attestation. Evidence outside the exact
 five-field join is semantically ignored, even if its key or signature is invalid.
-Selected evidence is verified fail-closed in input order before rejected decisions
-are filtered out.
+Selected evidence is verified and checked for authority causality and freshness
+fail-closed in input order before rejected decisions are filtered out. Canonical
+currency is evaluated only after that complete Step-13 chain succeeds.
 
 The semantic failures include `callee_lifecycle_evidence_missing`, generic attestation
 failures, `lifecycle_evidence_subject_mismatch` with role `callee`,
@@ -797,15 +803,101 @@ nor non-revocation inside the lease window, and it does not make an assertion
 single-use. Closing those gaps requires a later canonical approval version/revocation
 lookup and nonce or consumption storage.
 
+### Canonical Edge Approval Validity / Revocation Lookup v0.1
+
+Step 14 closes the canonical-currentness and revocation gaps as of the already trusted
+`authorization_time`. It does not add caller-supplied snapshot fields to either the
+runtime input or trusted context. Instead, the trusted composition root constructs one
+async Runtime Authorizer with a host-bound, read-only canonical-authority resolver.
+Planner, continuation, and resume state remain module-private; a TypeScript brand is
+not treated as a security boundary and no Step-13 lease-only allow fallback exists.
+
+The resolver is invoked exactly once only when the action is an `agent_call`, all
+global and declaration guards pass, every subject-relevant approval artifact passes
+Step-13 key-scope, signature, causality, and lease-freshness validation, and at least
+one verified `approved` candidate remains. Tool calls, rejected-only history, and all
+earlier failures perform no lookup.
+
+The lookup key remains the exact five-field edge subject:
+
+```text
+caller_spec_id
+caller_version
+callee_spec_id
+callee_version_or_channel
+trust_domain_id
+```
+
+The runtime never selects a historical record by caller-supplied `artifact_id` or
+revision. It requests one authoritative point-in-time view `as_of` the exact original
+`authorization_time`. The result must echo the exact subject and `as_of` string and
+carry an `observed_at` instant at or after `as_of`. `observed_at` is read audit
+metadata only; it is not a second policy clock or freshness lease. A backend that
+cannot prove a consistent historical view at `authorization_time` is unavailable and
+blocks fail-closed.
+
+The canonical record is strict:
+
+```text
+CanonicalAuthorityRecordV1
+  subject: EdgeSubjectV1
+  authority_revision: positive safe integer, monotone per subject
+  approval_digest: 64 lowercase hex characters
+  status: active | revoked
+```
+
+Every canonical authority-slot mutation increments `authority_revision`, including
+revocation. Revocation preserves the revoked approval digest at the new revision. A
+revoked slot is never reactivated in place; reactivation needs a new approved decision
+and revision. Rejected decision history never mutates the authority slot. Runtime
+currency does not trust or compare a presented revision; the revision remains store
+audit ordering.
+
+The decision digest is independent of the v2 authority-lease signature domain:
+
+```text
+domain = agent-builder/digest/call-graph-edge-approval/v1
+canonical_decision = canonical_json(strict_parse(DecidedCallGraphEdgeApproval))
+preimage = UTF8(domain + "\n" + canonical_decision)
+approval_digest = lowercase_hex(SHA-256(preimage))
+```
+
+The digest covers the complete decided approval and embedded policy edge. It excludes
+`asserted_at`, `freshness_ttl`, and the attestation envelope, so renewable leases over
+the same immutable decision retain one decision identity. Digest canonicalization is
+the same recursive key-sorting function used for runtime attestation preimages. The
+v2 signature domain therefore remains unchanged.
+
+After the lookup, absent authority blocks as
+`call_graph_edge_approval_not_current / subject_absent`. No presented approved digest
+matching the current record blocks as
+`call_graph_edge_approval_not_current / authority_superseded`. A matching current
+digest with status `revoked` blocks as `call_graph_edge_approval_revoked` before human
+gate, intent, cycle, callee, depth, or budget guards. Timeout, resolver failure, and
+untrustworthy response shape or binding block as
+`approval_authority_lookup_unavailable`.
+
+A lease-fresh superseded decision presented beside the lease-fresh current decision
+does not create ambiguity: only the current digest survives. Repeated independently
+validated evidence for identical canonical decision bytes is deduplicated. The
+existing `ambiguous_call_edge_approval` reason remains only as defense in depth if one
+digest ever corresponds to different canonical decision bytes. Invalid, causally
+broken, or lease-stale relevant evidence still blocks before lookup and cannot be
+made harmless by later currency filtering.
+
+Step 14 proves canonical authority and non-revocation at `authorization_time`, not
+through subsequent real execution. Revocation after that instant, single-use and nonce
+consumption, parent-budget consumption, sibling replay, process liveness, channel
+resolution, key custody, and real execution remain separate boundaries.
+
 Known v0.1 boundaries:
 
 - Signed lifecycle freshness bounds evidence age but does not prove synchronous
   current state after `asserted_at`; there is no lifecycle store lookup.
-- A presented decided call-graph approval now has authenticated origin, integrity, and
-  a maximum 300-second authority lease, but the harness does not prove that it is the
-  latest canonical decision, that it was not revoked inside that window, or that the
-  same assertion is single-use. Approval versioning, revocation lookup, and replay
-  storage remain later slices.
+- A presented decided call-graph approval now has authenticated origin, integrity, a
+  maximum 300-second authority lease, and canonical current/non-revoked status as of
+  `authorization_time`. The harness does not prove that the authority stays unrevoked
+  until execution or that the same assertion is single-use.
 - Parent context, `current_run_id`, cycle chain, depth, and remaining budgets are now
   authenticated as presented evidence. The harness still does not mutate or return a
   consumed parent context for later sibling calls, so aggregate sibling spend-down is

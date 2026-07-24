@@ -11,3 +11,4 @@ export * from "./runtime-binding-validity.js";
 export * from "./runtime-attestation.js";
 export * from "./runtime-authorization.js";
 export * from "./runtime-binding.js";
+export * from "./canonical-edge-authority.js";

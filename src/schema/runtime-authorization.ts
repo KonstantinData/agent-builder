@@ -130,6 +130,9 @@ export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
   "call_edge_not_approved",
   "call_graph_edge_approval_invalid",
   "call_graph_edge_approval_not_fresh",
+  "call_graph_edge_approval_not_current",
+  "call_graph_edge_approval_revoked",
+  "approval_authority_lookup_unavailable",
   "ambiguous_call_edge_approval",
   "call_intent_not_allowed",
   "human_gate_required",
@@ -163,6 +166,29 @@ export type RunContextTopologyCondition = z.infer<
   typeof RunContextTopologyConditionSchema
 >;
 
+export const CALL_GRAPH_EDGE_APPROVAL_CURRENCY_CONDITIONS = [
+  "subject_absent",
+  "authority_superseded",
+] as const;
+export const CallGraphEdgeApprovalCurrencyConditionSchema = z.enum(
+  CALL_GRAPH_EDGE_APPROVAL_CURRENCY_CONDITIONS,
+);
+export type CallGraphEdgeApprovalCurrencyCondition = z.infer<
+  typeof CallGraphEdgeApprovalCurrencyConditionSchema
+>;
+
+export const APPROVAL_AUTHORITY_LOOKUP_UNAVAILABLE_CONDITIONS = [
+  "timeout",
+  "resolver_error",
+  "response_untrustworthy",
+] as const;
+export const ApprovalAuthorityLookupUnavailableConditionSchema = z.enum(
+  APPROVAL_AUTHORITY_LOOKUP_UNAVAILABLE_CONDITIONS,
+);
+export type ApprovalAuthorityLookupUnavailableCondition = z.infer<
+  typeof ApprovalAuthorityLookupUnavailableConditionSchema
+>;
+
 export type RuntimeAuthorizationBlockReason =
   | { readonly type: "input_invalid"; readonly reason: string }
   | { readonly type: "runtime_state_not_executable"; readonly state: string }
@@ -181,6 +207,9 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "call_edge_not_approved"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
   | { readonly type: "call_graph_edge_approval_invalid"; readonly condition: CallGraphEdgeApprovalInvalidCondition; readonly artifactId: string }
   | { readonly type: "call_graph_edge_approval_not_fresh"; readonly condition: CallGraphEdgeApprovalFreshnessCondition; readonly artifactId: string }
+  | { readonly type: "call_graph_edge_approval_not_current"; readonly condition: CallGraphEdgeApprovalCurrencyCondition }
+  | { readonly type: "call_graph_edge_approval_revoked" }
+  | { readonly type: "approval_authority_lookup_unavailable"; readonly condition: ApprovalAuthorityLookupUnavailableCondition }
   | { readonly type: "ambiguous_call_edge_approval"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
   | { readonly type: "call_intent_not_allowed"; readonly intent: string }
   | { readonly type: "human_gate_required"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
