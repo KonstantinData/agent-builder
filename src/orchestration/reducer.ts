@@ -10,7 +10,9 @@ import {
   Rfc3339InstantSchema,
   RunStartEvidenceV1Schema,
   RunIntentV1Schema,
+  computeHumanContractCandidateDigest,
   computeLockedContractDigest,
+  verifyHumanContractApprovalV1Digest,
   verifyRunIntentDigest,
   type LockedStepContractV1,
   type ModelRoutingDecisionV1,
@@ -525,9 +527,33 @@ export function reduceOrchestration(
       contract.data.contractDigest === computeLockedContractDigest(
         (({ contractDigest: _ignored, ...value }) => value)(contract.data),
       );
+    const humanLockValid = (() => {
+      if (!contract.success) return false;
+      const mode = contract.data.contractLockMode ?? "claude";
+      if (mode === "claude") return contract.data.humanApproval === undefined;
+      const approval = contract.data.humanApproval;
+      if (approval === undefined || !verifyHumanContractApprovalV1Digest(approval) || approval.decision !== "approved") return false;
+      const { contractDigest: _ignoredDigest, humanApproval: _ignoredApproval, ...candidate } = contract.data;
+      return (
+        approval.runId === contract.data.runId &&
+        approval.stepId === contract.data.stepId &&
+        approval.baseRevision === contract.data.baseRevision &&
+        domainSeparatedDigest(
+          "agent-builder/orchestration/roadmap-base-reconciliation-binding/v1",
+          approval.baseReconciliation,
+        ) === domainSeparatedDigest(
+          "agent-builder/orchestration/roadmap-base-reconciliation-binding/v1",
+          contract.data.baseReconciliation ?? null,
+        ) &&
+        approval.candidateContractDigest === computeHumanContractCandidateDigest(candidate) &&
+        Date.parse(approval.observedAt) <= Date.parse(event.observedAt) &&
+        Date.parse(event.observedAt) <= Date.parse(approval.expiresAt)
+      );
+    })();
     if (
       !contract.success ||
       !digestMatches ||
+      !humanLockValid ||
       contract.data.stepId !== snapshot.currentStepId ||
       contract.data.baseRevision !== snapshot.intent.baseRevision ||
       contract.data.maxClaudeRounds !== snapshot.intent.maxClaudeRoundsPerStep ||

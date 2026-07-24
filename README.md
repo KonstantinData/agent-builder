@@ -20,6 +20,10 @@ The Claude-locked
 adds a bounded, digest-bound transparent-governance chain proof so a later domain step
 can retain its immutable roadmap anchor while binding execution to the exact current
 `origin/main`. It does not implement Step 16 or real host runners.
+Further Claude collaboration is retired. The
+[`Human Attended Contract Lock v0.1`](docs/architecture/human-attended-contract-lock-v0.1.md)
+accepts only a host-verified, expiring, digest-bound human approval for an exact
+candidate contract; it has no model or network fallback.
 Its job is not to execute agents directly. It turns builder intent into validated,
 versioned agent specifications, evaluates them against policy, and produces auditable
 approval decisions without deploying or executing the resulting agents.

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "human-attended-contract-lock-contract/1",
+  "contractVersion": "0.1",
+  "baseRevision": "b833e63303ac8f3e0218f01523b4ab611db76e08",
+  "lockMode": "human_attested",
+  "approvalSchemaVersion": "human-contract-approval/1",
+  "candidateDigestDomain": "agent-builder/orchestration/human-contract-candidate/v1",
+  "approvalDigestDomain": "agent-builder/orchestration/human-contract-approval/v1",
+  "requiredBindings": ["runId", "stepId", "baseRevision", "baseReconciliation", "candidateContractDigest", "attestorDescriptorDigest", "reviewerIdentityDigest", "decision", "observedAt", "expiresAt"],
+  "failClosedOutcomes": ["approval_missing", "approval_malformed", "approval_digest_mismatch", "approval_rejected", "approval_expired", "approval_binding_mismatch"],
+  "legacyCompatibility": "locked-step-contract/1 contracts without contractLockMode remain historical Claude evidence; human_attested contracts require approval evidence",
+  "excluded": ["claude_fallback", "self_approval", "credential_or_token_custody", "real_host_approval_runner", "merge_bypass"],
+  "contractDigest": "f907378436fa84ca5b4b366188f846553f6b93dfaefe6638e9e4c8b5d1e071f8"
+}

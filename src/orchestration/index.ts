@@ -8,6 +8,7 @@ export * from "./host-workflow-contracts.js";
 export * from "./host-workflow-controller.js";
 export * from "./host-workflow-persistence.js";
 export * from "./host-workflow-reducer.js";
+export * from "./human-attested-contract-negotiator.js";
 export * from "./model-routing.js";
 export * from "./persistence.js";
 export * from "./reducer.js";
