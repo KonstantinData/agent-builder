@@ -91,6 +91,25 @@ trusted host adapters for those capabilities ship in v0.1. Their interfaces and 
 gates remain available, and absence stays observable rather than being treated as
 success.
 
+### Claude host activation
+
+The concrete `ClaudeCliNegotiator` is usable only with host-supplied configuration:
+
+- an absolute path to a native executable, never an npm `.cmd`/shell shim;
+- the currently verified SHA-256 digest of that executable;
+- an explicit working directory and environment allowlist;
+- finite timeout and output-byte limits.
+
+The adapter invokes the executable with `shell: false`, one turn, disabled tools, and a
+strict JSON response contract. Executable upgrades intentionally invalidate the pinned
+digest until an attended operator verifies and updates the host configuration. Paths,
+authentication state, environment values, and executable digests are runtime evidence
+and must not be committed as portable repository truth.
+
+A host smoke on 2026-07-24 proved the native no-shell transport and strict conflict
+response path. That evidence proves the developing host connection only; it does not
+prove CI portability, stable future authentication, or any Claude authority.
+
 ## Roadmap eligibility
 
 The canonical roadmap is `roadmap/agent-builder-roadmap.v1.json`. Steps 1 through 15

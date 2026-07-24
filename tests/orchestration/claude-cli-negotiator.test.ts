@@ -31,6 +31,7 @@ function negotiator(output: unknown) {
     digestFile: async () => digest,
     runProcess: async (_config, prompt) => {
       expect(prompt).toContain("no approval");
+      expect(prompt).toContain("responseContract");
       return { kind: "ok", stdout: typeof output === "string" ? output : canonicalJson(output) };
     },
   });

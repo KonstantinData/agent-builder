@@ -119,6 +119,23 @@ export class ClaudeCliNegotiator {
 
     const prompt = canonicalJson({
       instruction: "Return exactly one strict JSON response matching proposal, conflict, or locked. Do not use tools. You have no approval, capability, deployment, PR, or merge authority.",
+      responseContract: {
+        proposal: {
+          kind: "proposal",
+          successCriteria: "non-empty string array",
+          allowedPaths: "non-empty subset of request.allowedPaths",
+          rationale: "bounded non-empty string",
+        },
+        conflict: {
+          kind: "conflict",
+          reason: "identifier string",
+          details: "bounded non-empty string",
+        },
+        locked: {
+          kind: "locked",
+          contract: "strict LockedStepContractV1 echoing run, step, base, scope, routing, and canonical contract digest",
+        },
+      },
       request,
     });
     const processResult = this.dependencies.runProcess === undefined
