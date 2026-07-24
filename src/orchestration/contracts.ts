@@ -198,6 +198,48 @@ export const RoadmapV1Schema = z
   .strict();
 export type RoadmapV1 = z.infer<typeof RoadmapV1Schema>;
 
+const HumanContractApprovalWithoutDigestSchema = z
+  .object({
+    schemaVersion: z.literal("human-contract-approval/1"),
+    runId: IdentifierSchema,
+    stepId: IdentifierSchema,
+    baseRevision: GitShaSchema,
+    baseReconciliation: RoadmapBaseReconciliationBindingV1Schema.nullable(),
+    candidateContractDigest: DigestSchema,
+    attestorDescriptorDigest: DigestSchema,
+    reviewerIdentityDigest: DigestSchema,
+    decision: z.enum(["approved", "rejected"]),
+    observedAt: Rfc3339InstantSchema,
+    expiresAt: Rfc3339InstantSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (Date.parse(value.expiresAt) <= Date.parse(value.observedAt)) {
+      context.addIssue({ code: "custom", path: ["expiresAt"], message: "expiresAt must be after observedAt" });
+    }
+  });
+
+export const HumanContractApprovalV1Schema = HumanContractApprovalWithoutDigestSchema.and(
+  z.object({ approvalDigest: DigestSchema }).strict(),
+);
+export type HumanContractApprovalV1 = z.infer<typeof HumanContractApprovalV1Schema>;
+export type HumanContractApprovalV1Input = z.input<typeof HumanContractApprovalWithoutDigestSchema>;
+
+export function createHumanContractApprovalV1(input: HumanContractApprovalV1Input): HumanContractApprovalV1 {
+  const parsed = HumanContractApprovalWithoutDigestSchema.parse(input);
+  return HumanContractApprovalV1Schema.parse({
+    ...parsed,
+    approvalDigest: domainSeparatedDigest("agent-builder/orchestration/human-contract-approval/v1", parsed),
+  });
+}
+
+export function verifyHumanContractApprovalV1Digest(approval: HumanContractApprovalV1): boolean {
+  const parsed = HumanContractApprovalV1Schema.safeParse(approval);
+  if (!parsed.success) return false;
+  const { approvalDigest, ...payload } = parsed.data;
+  return approvalDigest === domainSeparatedDigest("agent-builder/orchestration/human-contract-approval/v1", payload);
+}
+
 export const LockedStepContractV1Schema = z
   .object({
     schemaVersion: z.literal("locked-step-contract/1"),
@@ -213,6 +255,8 @@ export const LockedStepContractV1Schema = z
     maxClaudeRounds: z.number().int().min(1).max(4),
     routingDecision: ModelRoutingDecisionV1Schema,
     baseReconciliation: RoadmapBaseReconciliationBindingV1Schema.nullable().optional(),
+    contractLockMode: z.enum(["claude", "human_attested"]).optional(),
+    humanApproval: HumanContractApprovalV1Schema.optional(),
     controllerAddendum: z
       .object({
         schemaVersion: z.literal("attended-orchestration-controller/1"),
@@ -225,8 +269,23 @@ export const LockedStepContractV1Schema = z
       .optional(),
     contractDigest: DigestSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const mode = value.contractLockMode ?? "claude";
+    if (mode === "human_attested" && value.humanApproval === undefined) {
+      context.addIssue({ code: "custom", path: ["humanApproval"], message: "human-attested contracts require approval evidence" });
+    }
+    if (mode === "claude" && value.humanApproval !== undefined) {
+      context.addIssue({ code: "custom", path: ["humanApproval"], message: "Claude contracts must not contain human approval evidence" });
+    }
+  });
 export type LockedStepContractV1 = z.infer<typeof LockedStepContractV1Schema>;
+
+export function computeHumanContractCandidateDigest(
+  contract: Omit<LockedStepContractV1, "contractDigest" | "humanApproval">,
+): string {
+  return domainSeparatedDigest("agent-builder/orchestration/human-contract-candidate/v1", contract);
+}
 
 export function computeLockedContractDigest(
   contract: Omit<LockedStepContractV1, "contractDigest">,
