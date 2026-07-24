@@ -1,7 +1,10 @@
 import {
   createRoadmapBaseReconciliationProofV1,
+  createRoadmapBaseReconciliationProofV2,
   ROADMAP_RECONCILIATION_POLICY_DIGEST,
+  ROADMAP_RECONCILIATION_POLICY_V2_DIGEST,
   type RoadmapBaseReconciliationProofV1,
+  type RoadmapBaseReconciliationProofV2,
 } from "../../src/orchestration/roadmap-reconciliation.js";
 
 export const PR18_MERGE_SHA = "aeec5a84d0dd3ae16bfad39b81cc74291be0002f";
@@ -95,6 +98,111 @@ export function bootstrapReconciliationProof(): RoadmapBaseReconciliationProofV1
           "tests/orchestration/host-workflow-controller.test.ts",
           "tests/orchestration/host-workflow-persistence.test.ts",
         ].sort(),
+        capabilityEffect: "reduce_or_preserve",
+        deploymentEffect: "none",
+      },
+    ],
+  });
+}
+
+export const PR19_MERGE_SHA = "b833e63303ac8f3e0218f01523b4ab611db76e08";
+export const PR20_MERGE_SHA = "6f637285c77054b17abca40c18f42c7f615d9be4";
+export const PR21_MERGE_SHA = "d".repeat(40);
+
+export function bootstrapReconciliationProofV2(): RoadmapBaseReconciliationProofV2 {
+  const v1 = bootstrapReconciliationProof();
+  const commits = v1.commits.map(({ schemaVersion: _ignored, ...commit }) => ({
+    ...commit,
+    schemaVersion: "transparent-meta-commit-proof/2" as const,
+  }));
+  return createRoadmapBaseReconciliationProofV2({
+    schemaVersion: "roadmap-base-reconciliation-proof/2",
+    policyDigest: ROADMAP_RECONCILIATION_POLICY_V2_DIGEST,
+    domainBaseSha: v1.domainBaseSha,
+    observedOriginMainSha: PR21_MERGE_SHA,
+    commits: [
+      ...commits,
+      {
+        schemaVersion: "transparent-meta-commit-proof/2",
+        source: "github_pull_request",
+        mergeMethod: "squash",
+        parentSha: PR18_MERGE_SHA,
+        mergeCommitSha: PR19_MERGE_SHA,
+        mergeCommitReachableFromOriginMain: true,
+        mergeCommitTreeMatchesPullRequestHead: true,
+        pullRequestNumber: 19,
+        pullRequestHeadSha: "b4c29264258e6a783bbff3f9906f23a27dbb9c71",
+        pullRequestState: "merged",
+        mergedAt: "2026-07-24T17:21:55Z",
+        requiredCheck: { name: "verify", headSha: "b4c29264258e6a783bbff3f9906f23a27dbb9c71", conclusion: "success" },
+        workflowSafetyManifestDigest: WORKFLOW_MANIFEST_DIGEST,
+        changedPaths: [
+          "README.md",
+          "contracts/roadmap-base-reconciliation-v0.1.json",
+          "docs/architecture/autonomous-roadmap-orchestration-v0.1.md",
+          "docs/architecture/roadmap-base-reconciliation-v0.1.md",
+          "roadmap/agent-builder-roadmap.v1.json",
+          "src/orchestration/adapters.ts",
+          "src/orchestration/claude-cli-negotiator.ts",
+          "src/orchestration/contracts.ts",
+          "src/orchestration/controller.ts",
+          "src/orchestration/index.ts",
+          "src/orchestration/reducer.ts",
+          "src/orchestration/roadmap-reconciliation.ts",
+          "src/orchestration/roadmap.ts",
+          "tests/orchestration/claude-cli-negotiator.test.ts",
+          "tests/orchestration/controller.test.ts",
+          "tests/orchestration/persistence.test.ts",
+          "tests/orchestration/reconciliation-support.ts",
+          "tests/orchestration/reducer.test.ts",
+          "tests/orchestration/roadmap-reconciliation.test.ts",
+          "tests/orchestration/roadmap.test.ts",
+        ],
+        capabilityEffect: "reduce_or_preserve",
+        deploymentEffect: "none",
+      },
+      {
+        schemaVersion: "transparent-meta-commit-proof/2",
+        source: "github_pull_request",
+        mergeMethod: "merge",
+        parentSha: PR19_MERGE_SHA,
+        mergeCommitSha: PR20_MERGE_SHA,
+        mergeCommitReachableFromOriginMain: true,
+        mergeCommitTreeMatchesPullRequestHead: true,
+        pullRequestNumber: 20,
+        pullRequestHeadSha: "fcf2af8008a87cda4d9d1dfc55dc920fcd2be7b0",
+        pullRequestState: "merged",
+        mergedAt: "2026-07-24T19:42:29Z",
+        requiredCheck: { name: "verify", headSha: "fcf2af8008a87cda4d9d1dfc55dc920fcd2be7b0", conclusion: "success" },
+        workflowSafetyManifestDigest: WORKFLOW_MANIFEST_DIGEST,
+        changedPaths: [
+          "README.md",
+          "contracts/human-attended-contract-lock-v0.1.json",
+          "docs/architecture/human-attended-contract-lock-v0.1.md",
+          "src/orchestration/contracts.ts",
+          "src/orchestration/human-attested-contract-negotiator.ts",
+          "src/orchestration/index.ts",
+          "src/orchestration/reducer.ts",
+          "tests/orchestration/human-attested-contract-negotiator.test.ts",
+        ],
+        capabilityEffect: "reduce_or_preserve",
+        deploymentEffect: "none",
+      },
+      {
+        schemaVersion: "transparent-meta-commit-proof/2",
+        source: "github_pull_request",
+        mergeMethod: "squash",
+        parentSha: PR20_MERGE_SHA,
+        mergeCommitSha: PR21_MERGE_SHA,
+        mergeCommitReachableFromOriginMain: true,
+        mergeCommitTreeMatchesPullRequestHead: true,
+        pullRequestNumber: 21,
+        pullRequestHeadSha: "e".repeat(40),
+        pullRequestState: "merged",
+        mergedAt: "2026-07-25T10:00:00Z",
+        requiredCheck: { name: "verify", headSha: "e".repeat(40), conclusion: "success" },
+        workflowSafetyManifestDigest: WORKFLOW_MANIFEST_DIGEST,
+        changedPaths: ["README.md"],
         capabilityEffect: "reduce_or_preserve",
         deploymentEffect: "none",
       },

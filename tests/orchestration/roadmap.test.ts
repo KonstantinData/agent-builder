@@ -11,7 +11,7 @@ import {
   type CommitReachabilityProof,
 } from "../../src/orchestration/roadmap.js";
 import { BASE_SHA, testIntent } from "./support.js";
-import { bootstrapReconciliationProof, PR18_MERGE_SHA } from "./reconciliation-support.js";
+import { bootstrapReconciliationProof, bootstrapReconciliationProofV2, PR18_MERGE_SHA, PR21_MERGE_SHA } from "./reconciliation-support.js";
 
 async function loadRoadmap() {
   const text = await readFile(new URL("../../roadmap/agent-builder-roadmap.v1.json", import.meta.url), "utf8");
@@ -43,7 +43,7 @@ describe("machine-readable roadmap", () => {
   });
 
   it("selects Step 16 at the exact observed main only through the verified transparent meta chain", async () => {
-    const roadmap = await loadRoadmap();
+    const roadmap = { ...await loadRoadmap(), reconciliationPolicyVersion: "roadmap-base-reconciliation/1" as const };
     const proofs: CommitReachabilityProof[] = roadmap.items
       .filter((item) => item.mergeCommitSha !== null)
       .map((item) => ({ commitSha: item.mergeCommitSha!, reachableFromOriginMain: true }));
@@ -78,6 +78,29 @@ describe("machine-readable roadmap", () => {
       PR18_MERGE_SHA,
       proofs,
       { ...reconciliation, proofDigest: "0".repeat(64) },
+    )).toMatchObject({ kind: "stopped", reason: "roadmap_base_reconciliation_unverified" });
+  });
+
+  it("binds v2 selection to a v2 proof and rejects cross-version proof replay", async () => {
+    const roadmap = await loadRoadmap();
+    const v2Roadmap = roadmap;
+    const proofs: CommitReachabilityProof[] = roadmap.items
+      .filter((item) => item.mergeCommitSha !== null)
+      .map((item) => ({ commitSha: item.mergeCommitSha!, reachableFromOriginMain: true }));
+    const reconciliation = bootstrapReconciliationProofV2();
+    expect(selectNextRoadmapItem(
+      v2Roadmap,
+      testIntent({ baseRevision: PR21_MERGE_SHA }),
+      PR21_MERGE_SHA,
+      proofs,
+      reconciliation,
+    )).toMatchObject({ kind: "selected", item: { stepId: "step-16" } });
+    expect(selectNextRoadmapItem(
+      v2Roadmap,
+      testIntent({ baseRevision: PR18_MERGE_SHA }),
+      PR18_MERGE_SHA,
+      proofs,
+      bootstrapReconciliationProof(),
     )).toMatchObject({ kind: "stopped", reason: "roadmap_base_reconciliation_unverified" });
   });
 

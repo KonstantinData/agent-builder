@@ -20,8 +20,9 @@ import {
 } from "./contracts.js";
 import {
   RoadmapBaseReconciliationProofV1Schema,
+  RoadmapBaseReconciliationProofV2Schema,
   reconciliationBinding,
-  verifyRoadmapBaseReconciliationProofV1,
+  verifyRoadmapBaseReconciliationProof,
 } from "./roadmap-reconciliation.js";
 import { validateModelRoutingDecision } from "./model-routing.js";
 
@@ -175,7 +176,7 @@ export const RepositoryInspectionResultV1Schema = z
     defaultBranchProtected: z.boolean(),
     roadmapHistoryVerified: z.literal(true),
     completedStepReachability: z.record(GitShaSchema, z.boolean()).optional(),
-    baseReconciliationProof: RoadmapBaseReconciliationProofV1Schema.nullable().optional(),
+    baseReconciliationProof: z.union([RoadmapBaseReconciliationProofV1Schema, RoadmapBaseReconciliationProofV2Schema]).nullable().optional(),
   })
   .strict()
   .superRefine((inspection, context) => {
@@ -446,7 +447,7 @@ export function reduceOrchestration(
     } else if (inspection.baseReconciliationProof === null) {
       next = { ...next, inspectionBaseReconciliation: null };
     } else {
-      if (!verifyRoadmapBaseReconciliationProofV1(inspection.baseReconciliationProof)) {
+      if (!verifyRoadmapBaseReconciliationProof(inspection.baseReconciliationProof)) {
         return stoppedSnapshot(snapshot, event, "roadmap_base_reconciliation_unverified");
       }
       next = {
