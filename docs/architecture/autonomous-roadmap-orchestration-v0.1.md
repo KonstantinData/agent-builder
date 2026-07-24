@@ -91,6 +91,15 @@ trusted host adapters for those capabilities ship in v0.1. Their interfaces and 
 gates remain available, and absence stays observable rather than being treated as
 success.
 
+The separate [Host Workflow Adapter Contract v0.1](host-workflow-adapters-v0.1.md)
+adds a persisted controller composition for `contract_locked` through `step_complete`
+when a complete trusted adapter set is injected. Only strict contracts, pure policy
+evaluation, a pinned Claude contract negotiator, deterministic fakes, and composition
+ship in the repository: there is no real Git, GitHub, or verification subprocess
+runner. Pending resume is readback-only, CI reads are
+bounded, cleanup is verification-only, and an unprotected default branch stops as
+`merge_authority_missing` before merge invocation.
+
 ### Claude host activation
 
 The concrete `ClaudeCliNegotiator` is usable only with host-supplied configuration:
