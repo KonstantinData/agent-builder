@@ -20,6 +20,9 @@ The Claude-locked
 adds a bounded, digest-bound transparent-governance chain proof so a later domain step
 can retain its immutable roadmap anchor while binding execution to the exact current
 `origin/main`. It does not implement Step 16 or real host runners.
+The attended [`Roadmap Base Reconciliation Policy v0.2`](docs/architecture/roadmap-base-reconciliation-v0.2.md)
+preserves v0.1 replay and admits one fully pinned historical PR 20 merge record while
+requiring the policy-migration PR itself to be a squash merge; it grants no merge bypass.
 Further Claude collaboration is retired. The
 [`Human Attended Contract Lock v0.1`](docs/architecture/human-attended-contract-lock-v0.1.md)
 accepts only a host-verified, expiring, digest-bound human approval for an exact

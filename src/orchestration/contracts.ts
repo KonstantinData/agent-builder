@@ -192,7 +192,7 @@ export type RoadmapItemV1 = z.infer<typeof RoadmapItemV1Schema>;
 export const RoadmapV1Schema = z
   .object({
     schemaVersion: z.literal("agent-builder-roadmap/1"),
-    reconciliationPolicyVersion: z.literal("roadmap-base-reconciliation/1").optional(),
+    reconciliationPolicyVersion: z.union([z.literal("roadmap-base-reconciliation/1"), z.literal("roadmap-base-reconciliation/2")]).optional(),
     items: z.array(RoadmapItemV1Schema).min(1),
   })
   .strict();

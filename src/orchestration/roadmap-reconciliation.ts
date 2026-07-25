@@ -216,9 +216,9 @@ export function verifyRoadmapBaseReconciliationProofV1(
 }
 
 export function reconciliationBinding(
-  proof: RoadmapBaseReconciliationProofV1,
+  proof: RoadmapBaseReconciliationProof,
 ): RoadmapBaseReconciliationBindingV1 {
-  if (!verifyRoadmapBaseReconciliationProofV1(proof)) {
+  if (!verifyRoadmapBaseReconciliationProof(proof)) {
     throw new TypeError("roadmap reconciliation proof is malformed or untrustworthy");
   }
   return {
@@ -228,4 +228,107 @@ export function reconciliationBinding(
     observedOriginMainSha: proof.observedOriginMainSha,
     proofDigest: proof.proofDigest,
   };
+}
+
+/** Attended v2 migration: the only permitted non-squash historical record. */
+export const ROADMAP_RECONCILIATION_POLICY_V2_VERSION = "roadmap-base-reconciliation/2" as const;
+export const ROADMAP_RECONCILIATION_POLICY_V2_DIGEST = domainSeparatedDigest(
+  "agent-builder/orchestration/roadmap-reconciliation-policy/v2",
+  { ...POLICY_PAYLOAD, schemaVersion: ROADMAP_RECONCILIATION_POLICY_V2_VERSION, maxTransparentMetaCommits: 5, permittedHistoricalMerge: 20 },
+);
+
+const PR20_MERGE = Object.freeze({
+  pullRequestNumber: 20,
+  parentSha: "b833e63303ac8f3e0218f01523b4ab611db76e08",
+  mergeCommitSha: "6f637285c77054b17abca40c18f42c7f615d9be4",
+  pullRequestHeadSha: "fcf2af8008a87cda4d9d1dfc55dc920fcd2be7b0",
+  mergedAt: "2026-07-24T19:42:29Z",
+  changedPaths: [
+    "README.md", "contracts/human-attended-contract-lock-v0.1.json", "docs/architecture/human-attended-contract-lock-v0.1.md",
+    "src/orchestration/contracts.ts", "src/orchestration/human-attested-contract-negotiator.ts", "src/orchestration/index.ts",
+    "src/orchestration/reducer.ts", "tests/orchestration/human-attested-contract-negotiator.test.ts",
+  ],
+});
+
+export const TransparentMetaCommitProofV2Schema = z.object({
+  schemaVersion: z.literal("transparent-meta-commit-proof/2"),
+  source: z.literal("github_pull_request"),
+  mergeMethod: z.enum(["squash", "merge"]),
+  parentSha: GitShaSchema,
+  mergeCommitSha: GitShaSchema,
+  mergeCommitReachableFromOriginMain: z.literal(true),
+  mergeCommitTreeMatchesPullRequestHead: z.literal(true),
+  pullRequestNumber: z.number().int().positive(),
+  pullRequestHeadSha: GitShaSchema,
+  pullRequestState: z.literal("merged"),
+  mergedAt: Rfc3339InstantSchema,
+  requiredCheck: z.object({
+    name: z.literal("verify"),
+    headSha: GitShaSchema,
+    conclusion: z.literal("success"),
+  }).strict(),
+  workflowSafetyManifestDigest: DigestSchema,
+  changedPaths: SortedUniqueChangedPathsSchema,
+  capabilityEffect: z.literal("reduce_or_preserve"),
+  deploymentEffect: z.literal("none"),
+}).strict()
+  .superRefine((commit, context) => {
+    if (commit.parentSha === commit.mergeCommitSha) {
+      context.addIssue({ code: "custom", path: ["parentSha"], message: "meta commit cannot parent itself" });
+    }
+    if (commit.requiredCheck.headSha !== commit.pullRequestHeadSha) {
+      context.addIssue({ code: "custom", path: ["requiredCheck", "headSha"], message: "verify must bind the exact PR head" });
+    }
+    if (commit.workflowSafetyManifestDigest !== RECONCILIATION_WORKFLOW_SAFETY_MANIFEST_DIGEST) {
+      context.addIssue({ code: "custom", path: ["workflowSafetyManifestDigest"], message: "meta commit must bind the pinned workflow safety manifest" });
+    }
+    if (commit.mergeMethod === "squash") return;
+    if (
+      commit.pullRequestNumber !== PR20_MERGE.pullRequestNumber || commit.parentSha !== PR20_MERGE.parentSha ||
+      commit.mergeCommitSha !== PR20_MERGE.mergeCommitSha || commit.pullRequestHeadSha !== PR20_MERGE.pullRequestHeadSha ||
+      commit.mergedAt !== PR20_MERGE.mergedAt || JSON.stringify(commit.changedPaths) !== JSON.stringify(PR20_MERGE.changedPaths)
+    ) context.addIssue({ code: "custom", message: "only the fully pinned PR20 merge record is permitted in v2" });
+  });
+export type TransparentMetaCommitProofV2 = z.infer<typeof TransparentMetaCommitProofV2Schema>;
+
+const RoadmapBaseReconciliationProofV2PayloadSchema = z.object({
+  schemaVersion: z.literal("roadmap-base-reconciliation-proof/2"), policyDigest: DigestSchema, domainBaseSha: GitShaSchema,
+  observedOriginMainSha: GitShaSchema, commits: z.array(TransparentMetaCommitProofV2Schema).min(1).max(5),
+}).strict().superRefine((proof, context) => {
+  if (proof.policyDigest !== ROADMAP_RECONCILIATION_POLICY_V2_DIGEST) context.addIssue({ code: "custom", path: ["policyDigest"], message: "v2 policy digest mismatch" });
+  let parent = proof.domainBaseSha;
+  const mergeCommits = new Set<string>();
+  const pullRequests = new Set<number>();
+  const pullRequestHeads = new Set<string>();
+  for (const [index, commit] of proof.commits.entries()) {
+    if (commit.parentSha !== parent) context.addIssue({ code: "custom", path: ["commits", index], message: "meta chain is not gap-free" });
+    if (mergeCommits.has(commit.mergeCommitSha) || pullRequests.has(commit.pullRequestNumber) || pullRequestHeads.has(commit.pullRequestHeadSha)) {
+      context.addIssue({ code: "custom", path: ["commits", index], message: "meta chain contains duplicate provenance" });
+    }
+    mergeCommits.add(commit.mergeCommitSha);
+    pullRequests.add(commit.pullRequestNumber);
+    pullRequestHeads.add(commit.pullRequestHeadSha);
+    parent = commit.mergeCommitSha;
+  }
+  if (parent !== proof.observedOriginMainSha) context.addIssue({ code: "custom", path: ["observedOriginMainSha"], message: "meta chain does not end at origin/main" });
+});
+export const RoadmapBaseReconciliationProofV2Schema = RoadmapBaseReconciliationProofV2PayloadSchema.extend({ proofDigest: DigestSchema }).superRefine((proof, context) => {
+  const { proofDigest, ...payload } = proof;
+  if (proofDigest !== domainSeparatedDigest("agent-builder/orchestration/roadmap-base-reconciliation-proof/v2", payload)) context.addIssue({ code: "custom", message: "v2 proof digest mismatch" });
+});
+export type RoadmapBaseReconciliationProofV2 = z.infer<typeof RoadmapBaseReconciliationProofV2Schema>;
+export type RoadmapBaseReconciliationProof = RoadmapBaseReconciliationProofV1 | RoadmapBaseReconciliationProofV2;
+
+export function createRoadmapBaseReconciliationProofV2(input: z.input<typeof RoadmapBaseReconciliationProofV2PayloadSchema>): RoadmapBaseReconciliationProofV2 {
+  const payload = RoadmapBaseReconciliationProofV2PayloadSchema.parse(input);
+  return RoadmapBaseReconciliationProofV2Schema.parse({
+    ...payload,
+    proofDigest: domainSeparatedDigest("agent-builder/orchestration/roadmap-base-reconciliation-proof/v2", payload),
+  });
+}
+
+export function verifyRoadmapBaseReconciliationProof(proof: RoadmapBaseReconciliationProof): boolean {
+  return proof.schemaVersion === "roadmap-base-reconciliation-proof/1"
+    ? verifyRoadmapBaseReconciliationProofV1(proof)
+    : RoadmapBaseReconciliationProofV2Schema.safeParse(proof).success;
 }

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "roadmap-base-reconciliation-contract/2",
+  "contractVersion": "0.2",
+  "supersedes": "contracts/roadmap-base-reconciliation-v0.1.json",
+  "policy": {
+    "schemaVersion": "roadmap-base-reconciliation/2",
+    "policyDigest": "e390bf09d2cd0d9be3c74dc035005430b30f1669b603a4b53e9b02aef6cb266b",
+    "maxTransparentMetaCommits": 5,
+    "requiredCheck": "verify",
+    "requiredMergeSource": "github_pull_request",
+    "requiredMergeMethod": "squash",
+    "permittedHistoricalMerge": {
+      "pullRequestNumber": 20,
+      "parentSha": "b833e63303ac8f3e0218f01523b4ab611db76e08",
+      "mergeCommitSha": "6f637285c77054b17abca40c18f42c7f615d9be4",
+      "pullRequestHeadSha": "fcf2af8008a87cda4d9d1dfc55dc920fcd2be7b0",
+      "mergedAt": "2026-07-24T19:42:29Z",
+      "changedPaths": [
+        "README.md",
+        "contracts/human-attended-contract-lock-v0.1.json",
+        "docs/architecture/human-attended-contract-lock-v0.1.md",
+        "src/orchestration/contracts.ts",
+        "src/orchestration/human-attested-contract-negotiator.ts",
+        "src/orchestration/index.ts",
+        "src/orchestration/reducer.ts",
+        "tests/orchestration/human-attested-contract-negotiator.test.ts"
+      ]
+    },
+    "workflowSafetyManifestDigest": "cf76aa31ea735049165136709028f69e07c82b80c1ee3eb40a0078ef61e8553d",
+    "capabilityEffect": "reduce_or_preserve",
+    "deploymentEffect": "none"
+  },
+  "migration": {
+    "v1RemainsReplayable": true,
+    "roadmapMustNameV2": true,
+    "proofSchemaMustMatchRoadmapPolicy": true,
+    "migrationPullRequestMustBeSquashMerged": true,
+    "unknownStateBehavior": "fail_closed"
+  },
+  "nonClaims": [
+    "step_16_runtime_implementation",
+    "real_repository_inspector",
+    "real_git_or_github_runner",
+    "credential_or_token_custody",
+    "branch_protection_bypass",
+    "merge_bypass"
+  ],
+  "contractDigest": "3e123841032ac78b7bb7a33c990598f5311625e1d914b340dc329917b69f185d"
+}

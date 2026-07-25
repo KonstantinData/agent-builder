@@ -6,9 +6,10 @@ import {
 } from "./contracts.js";
 import {
   ROADMAP_RECONCILIATION_POLICY_VERSION,
+  ROADMAP_RECONCILIATION_POLICY_V2_VERSION,
   reconciliationBinding,
-  verifyRoadmapBaseReconciliationProofV1,
-  type RoadmapBaseReconciliationProofV1,
+  verifyRoadmapBaseReconciliationProof,
+  type RoadmapBaseReconciliationProof,
 } from "./roadmap-reconciliation.js";
 
 export const GLOBAL_FORBIDDEN_SURFACES = Object.freeze([
@@ -103,7 +104,7 @@ export function selectNextRoadmapItem(
   intent: RunIntentV1,
   verifiedOriginMainSha: string,
   ancestryProofs: readonly CommitReachabilityProof[],
-  baseReconciliationProof: RoadmapBaseReconciliationProofV1 | null = null,
+  baseReconciliationProof: RoadmapBaseReconciliationProof | null = null,
 ): RoadmapSelection {
   const roadmap = RoadmapV1Schema.parse(roadmapInput);
   const proofBySha = new Map(ancestryProofs.map((proof) => [proof.commitSha, proof.reachableFromOriginMain]));
@@ -132,9 +133,12 @@ export function selectNextRoadmapItem(
   }
   const completedById = new Map(completed.map((item) => [item.stepId, item]));
   const reconciledBaseIsValid = (item: RoadmapItemV1): boolean =>
-    roadmap.reconciliationPolicyVersion === ROADMAP_RECONCILIATION_POLICY_VERSION &&
+    ((roadmap.reconciliationPolicyVersion === ROADMAP_RECONCILIATION_POLICY_VERSION &&
+      baseReconciliationProof?.schemaVersion === "roadmap-base-reconciliation-proof/1") ||
+      (roadmap.reconciliationPolicyVersion === ROADMAP_RECONCILIATION_POLICY_V2_VERSION &&
+        baseReconciliationProof?.schemaVersion === "roadmap-base-reconciliation-proof/2")) &&
     baseReconciliationProof !== null &&
-    verifyRoadmapBaseReconciliationProofV1(baseReconciliationProof) &&
+    verifyRoadmapBaseReconciliationProof(baseReconciliationProof) &&
     baseReconciliationProof.domainBaseSha === item.expectedBaseMergeSha &&
     baseReconciliationProof.observedOriginMainSha === verifiedOriginMainSha;
   const eligible = incomplete.filter((item) => {

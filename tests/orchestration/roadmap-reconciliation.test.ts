@@ -4,13 +4,16 @@ import { domainSeparatedDigest } from "../../src/orchestration/canonical-json.js
 import {
   MAX_TRANSPARENT_META_COMMITS,
   ROADMAP_RECONCILIATION_POLICY_DIGEST,
+  ROADMAP_RECONCILIATION_POLICY_V2_DIGEST,
   RoadmapBaseReconciliationProofV1Schema,
+  RoadmapBaseReconciliationProofV2Schema,
   reconciliationBinding,
+  verifyRoadmapBaseReconciliationProof,
   verifyRoadmapBaseReconciliationProofV1,
   TRANSPARENT_META_ALLOWED_PATHS,
   TRANSPARENT_META_FORBIDDEN_SURFACES,
 } from "../../src/orchestration/roadmap-reconciliation.js";
-import { bootstrapReconciliationProof, PR18_MERGE_SHA } from "./reconciliation-support.js";
+import { bootstrapReconciliationProof, bootstrapReconciliationProofV2, PR18_MERGE_SHA } from "./reconciliation-support.js";
 
 describe("roadmap base reconciliation", () => {
   it("pins the Claude-locked versioned contract and executable policy digest", async () => {
@@ -90,5 +93,38 @@ describe("roadmap base reconciliation", () => {
       ...proof,
       commits: Array.from({ length: MAX_TRANSPARENT_META_COMMITS + 1 }, () => first),
     }).success).toBe(false);
+  });
+
+  it("pins the attended v2 migration artifact to the executable policy", async () => {
+    const artifact = JSON.parse(await readFile(
+      new URL("../../contracts/roadmap-base-reconciliation-v0.2.json", import.meta.url),
+      "utf8",
+    )) as Record<string, unknown>;
+    const { contractDigest, ...payload } = artifact;
+    expect((artifact["policy"] as Record<string, unknown>)["policyDigest"])
+      .toBe(ROADMAP_RECONCILIATION_POLICY_V2_DIGEST);
+    expect(contractDigest).toBe(domainSeparatedDigest(
+      "agent-builder/orchestration/roadmap-base-reconciliation-contract/v2",
+      payload,
+    ));
+  });
+
+  it("accepts only the pinned PR 20 historical merge inside the bounded v2 chain", () => {
+    const proof = bootstrapReconciliationProofV2();
+    expect(verifyRoadmapBaseReconciliationProof(proof)).toBe(true);
+    expect(proof.policyDigest).toBe(ROADMAP_RECONCILIATION_POLICY_V2_DIGEST);
+    expect(proof.commits).toHaveLength(5);
+    expect(proof.commits[3]).toMatchObject({ pullRequestNumber: 20, mergeMethod: "merge" });
+
+    const reject = (commits: unknown) => RoadmapBaseReconciliationProofV2Schema.safeParse({
+      ...proof,
+      commits,
+    }).success;
+    expect(reject(proof.commits.map((commit, index) => index === 3
+      ? { ...commit, pullRequestHeadSha: "0".repeat(40), requiredCheck: { ...commit.requiredCheck, headSha: "0".repeat(40) } }
+      : commit))).toBe(false);
+    expect(reject(proof.commits.map((commit, index) => index === 4 ? { ...commit, mergeMethod: "merge" } : commit))).toBe(false);
+    expect(reject([...proof.commits, proof.commits[4]])).toBe(false);
+    expect(reject(proof.commits.map((commit, index) => index === 4 ? { ...commit, pullRequestNumber: 20 } : commit))).toBe(false);
   });
 });

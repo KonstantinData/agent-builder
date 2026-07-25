@@ -186,7 +186,7 @@ describe("attended orchestration controller", () => {
   });
 
   it("persists and reuses the exact reconciliation proof without requiring branch protection before selection", async () => {
-    const roadmap = await loadRoadmap();
+    const roadmap = { ...await loadRoadmap(), reconciliationPolicyVersion: "roadmap-base-reconciliation/1" as const };
     const proof = bootstrapReconciliationProof();
     const configured = await adapters(roadmap, {
       repositoryInspector: {
