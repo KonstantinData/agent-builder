@@ -154,6 +154,7 @@ export const AgentSpecApprovalSchema = z
       }
     }
   });
+export type AgentSpecApproval = z.infer<typeof AgentSpecApprovalSchema>;
 
 export const CallGraphEdgeApprovalSchema = z
   .object({
