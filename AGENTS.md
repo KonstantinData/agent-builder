@@ -40,3 +40,23 @@ When a package is waiting for an external event, the agent must:
 
 Before any final completion statement, re-check both backlogs, all active PRs, required
 checks, review decisions, local branch status, and remaining local/remote branches.
+
+## Mandatory Autonomous Delivery Loop
+
+For every executable Agent Builder backlog package, agents must autonomously complete
+this loop without waiting for a further user prompt:
+
+1. implement the package on its own `codex/` branch, with the required tests and
+   documentation;
+2. run the relevant validation, commit with a Conventional Commit, push, and create a
+   pull request;
+3. repeatedly verify exact head/base binding, independent review, required checks, and
+   branch protection; merge only when all are actually satisfied;
+4. fast-forward local `main` from `origin/main`, verify the merged patch is present,
+   and delete only the corresponding verified merged branch;
+5. update the linked Notion record with implementation, verification, merge, cleanup,
+   and any remaining follow-up evidence;
+6. immediately select and start the next independent executable package.
+
+Neither a user-facing update, a successful local test run, a commit, a pushed branch,
+an open PR, nor a waiting review/CI check ends this loop or the overall backlog request.

@@ -21,6 +21,11 @@ describe("AgentSpecRuntimeMetadataSchema", () => {
     const candidate = {
       ...validMetadata,
       state: "deployed",
+      stateHistory: [
+        ...validMetadata.stateHistory,
+        { state: "approved", actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "approved" },
+        { state: "deployed", actor: "binding-executor", timestamp: "2026-07-23T12:30:00Z", reason: "bound" },
+      ],
       deploymentBinding: {
         bindingId: "binding-crm-enricher-001",
         contentHash: "hash-v1",
