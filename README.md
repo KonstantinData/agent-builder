@@ -294,6 +294,10 @@ This package intentionally keeps several capabilities out of scope:
   Parent-budget consumption and sibling replay protection are limited to an injected,
   linearizable, host/store-local reservation adapter; the package ships neither that
   store nor a portable receipt or execution adapter
+- no runtime-store implementation. The published `persisted-authorization-store/1`
+  contract is tenant-scoped receipt readback and parent-decision linkage only; it
+  supplies no database, migration, credential, redemption, or execution capability.
+  See `docs/architecture/persisted-authorization-store-contract-v0.1.md`.
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
 - no array-order selection among matching call-graph approvals; only the canonical
