@@ -140,6 +140,8 @@ export const RUNTIME_AUTHORIZATION_BLOCK_REASONS = [
   "agent_call_authorization_reservation_not_current",
   "agent_call_authorization_reservation_revoked",
   "agent_call_authorization_reservation_window_expired",
+  "parent_budget_exhausted",
+  "parent_budget_replay_conflict",
   "agent_call_authorization_reservation_indeterminate",
   "ambiguous_call_edge_approval",
   "call_intent_not_allowed",
@@ -245,6 +247,8 @@ export type RuntimeAuthorizationBlockReason =
   | { readonly type: "agent_call_authorization_reservation_not_current"; readonly condition: AgentCallAuthorizationReservationCurrencyCondition }
   | { readonly type: "agent_call_authorization_reservation_revoked" }
   | { readonly type: "agent_call_authorization_reservation_window_expired" }
+  | { readonly type: "parent_budget_exhausted" }
+  | { readonly type: "parent_budget_replay_conflict" }
   | { readonly type: "agent_call_authorization_reservation_indeterminate"; readonly condition: AgentCallAuthorizationReservationIndeterminateCondition }
   | { readonly type: "ambiguous_call_edge_approval"; readonly calleeSpecId: string; readonly calleeVersionOrChannel: string }
   | { readonly type: "call_intent_not_allowed"; readonly intent: string }

@@ -991,6 +991,15 @@ approval bytes, and supplies expected revision and digest. Step 15 performs one 
 atomic comparison at its later transaction instant and inserts only if that exact
 authority remains active and every bound lease remains open.
 
+Step 16 extends the same injected reservation boundary with one atomic parent-budget
+consumption operation. The request binds the signed parent run-context digest, exact
+child action and draft digests, authority revision/digest, authorization lease, parent
+budget snapshot, and child allocation. Its replay identifier is domain-separated. A
+trusted injected store must compare authority, serialize sibling debits, and return an
+identical receipt for an exact retry without a second debit. Any depleted budget,
+replay conflict, timeout, unavailable store, malformed receipt, or arithmetic mismatch
+blocks. The Data Plane neither owns the ledger nor dispatches the child.
+
 New fail-closed reasons are:
 
 ```text
@@ -1003,11 +1012,15 @@ agent_call_authorization_reservation_window_expired
 
 agent_call_authorization_reservation_indeterminate
   condition: timeout | adapter_error | store_error | response_untrustworthy
+
+parent_budget_exhausted
+
+parent_budget_replay_conflict
 ```
 
-Reservation is not dispatch or consumption. Step 15 proves at most one logical local
-reservation per deterministic authorization binding. It does not prove portable
-receipt redemption, execution completion, or at-most-once execution.
+Reservation is not dispatch. Step 16 proves one host/store-local atomic debit for a
+receipt-bound child allocation and exact-retry idempotence. It does not prove portable
+receipt redemption, execution completion, child issuance, or at-most-once execution.
 
 Known v0.1 boundaries:
 
@@ -1018,16 +1031,16 @@ Known v0.1 boundaries:
   `authorization_time`. A successful agent-call authorization also has one atomic local
   reservation while every required lease is still open, but the Harness does not prove
   that its receipt stays unrevoked or is redeemed only once by a later executor.
-- Parent context, `current_run_id`, cycle chain, depth, and remaining budgets are now
-  authenticated as presented evidence. The harness still does not mutate or return a
-  consumed parent context for later sibling calls, so aggregate sibling spend-down is
-  not proven.
+- Parent context, `current_run_id`, cycle chain, depth, and remaining budgets are
+  authenticated as presented evidence. Aggregate sibling spend-down is enforced only
+  when the injected linearizable reservation store is present and trustworthy; the
+  repository provides its strict protocol and deterministic tests, not a store.
 - Process liveness is not proven. That requires heartbeat evidence, a runtime store,
   and a lifecycle-specific runtime lookup. The Step-15 reservation adapter provides
   none of those liveness semantics.
 - Key issuance, private-key custody, KMS/HSM, CRL or other key-revocation distribution,
-  parent-budget consumption, sibling spend-down/replay, tool-call reservation, receipt
-  redemption, channel resolution, and real execution remain out of scope.
+  tool-call reservation, receipt redemption, channel resolution, and real execution
+  remain out of scope.
 
 ## 11. Drift Detection and Revocation Loop
 

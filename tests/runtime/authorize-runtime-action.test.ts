@@ -162,6 +162,12 @@ const defaultAuthorizationReservationAdapter: AgentCallAuthorizationReservationA
     receipt: {
       ...request,
       reservedAt: request.authorizationTime,
+      parentBudgetConsumedTotal: { ...request.childBudget },
+      parentBudgetRemaining: {
+        callBudget: request.parentBudgetBefore.callBudget - request.childBudget.callBudget,
+        tokenBudget: request.parentBudgetBefore.tokenBudget - request.childBudget.tokenBudget,
+        timeBudget: request.parentBudgetBefore.timeBudget - request.childBudget.timeBudget,
+      },
     },
   });
 
@@ -2325,6 +2331,12 @@ describe("authorizeRuntimeAction Step 15 agent-call authorization reservation", 
       receipt: {
         ...request,
         reservedAt: request.authorizationTime,
+        parentBudgetConsumedTotal: { ...request.childBudget },
+        parentBudgetRemaining: {
+          callBudget: request.parentBudgetBefore.callBudget - request.childBudget.callBudget,
+          tokenBudget: request.parentBudgetBefore.tokenBudget - request.childBudget.tokenBudget,
+          timeBudget: request.parentBudgetBefore.timeBudget - request.childBudget.timeBudget,
+        },
       },
     };
   }
@@ -2545,6 +2557,14 @@ describe("authorizeRuntimeAction Step 15 agent-call authorization reservation", 
           condition: "store_error",
         },
       },
+      {
+        result: (request) => ({ kind: "parent_budget_exhausted", observedAt: request.authorizationTime }),
+        expected: { type: "parent_budget_exhausted" },
+      },
+      {
+        result: (request) => ({ kind: "replay_conflict", observedAt: request.authorizationTime }),
+        expected: { type: "parent_budget_replay_conflict" },
+      },
     ];
 
     for (const testCase of cases) {
@@ -2583,6 +2603,13 @@ describe("authorizeRuntimeAction Step 15 agent-call authorization reservation", 
         },
       }),
       async (request) => ({
+        ...reservedResult(request),
+        receipt: {
+          ...reservedResult(request).receipt,
+          parentBudgetRemaining: { callBudget: 99, tokenBudget: 0, timeBudget: 0 },
+        },
+      }),
+      async (request) => ({
         kind: "subject_absent",
         observedAt: "2026-07-23T12:59:59.999Z",
       }),
@@ -2614,6 +2641,52 @@ describe("authorizeRuntimeAction Step 15 agent-call authorization reservation", 
         },
       });
     }
+  });
+
+  it("permits bounded siblings, never overdraws their shared parent budget, and makes exact replay idempotent", async () => {
+    const receipts = new Map<string, ReturnType<typeof reservedResult>["receipt"]>();
+    let remaining = { callBudget: 3, tokenBudget: 20_000, timeBudget: 30_000 };
+    const adapter: AgentCallAuthorizationReservationAdapter = async (request) => {
+      const prior = receipts.get(request.reservationId);
+      if (prior !== undefined) return { kind: "already_reserved", receipt: prior };
+      if (
+        request.childBudget.callBudget > remaining.callBudget ||
+        request.childBudget.tokenBudget > remaining.tokenBudget ||
+        request.childBudget.timeBudget > remaining.timeBudget
+      ) return { kind: "parent_budget_exhausted", observedAt: request.authorizationTime };
+      remaining = {
+        callBudget: remaining.callBudget - request.childBudget.callBudget,
+        tokenBudget: remaining.tokenBudget - request.childBudget.tokenBudget,
+        timeBudget: remaining.timeBudget - request.childBudget.timeBudget,
+      };
+      const receipt = {
+        ...request,
+        reservedAt: request.authorizationTime,
+        parentBudgetConsumedTotal: {
+          callBudget: request.parentBudgetBefore.callBudget - remaining.callBudget,
+          tokenBudget: request.parentBudgetBefore.tokenBudget - remaining.tokenBudget,
+          timeBudget: request.parentBudgetBefore.timeBudget - remaining.timeBudget,
+        },
+        parentBudgetRemaining: { ...remaining },
+      };
+      receipts.set(request.reservationId, receipt);
+      return { kind: "reserved", receipt };
+    };
+    const first = agentInput();
+    const sibling = agentInput({
+      action: { ...agentAction, childBudget: { callBudget: 1, tokenBudget: 10_000, timeBudget: 10_000 } },
+    });
+    expect((await authorizeWithReservationAdapter(first, adapter)).outcome).toBe("allowed");
+    expect((await authorizeWithReservationAdapter(sibling, adapter)).outcome).toBe("allowed");
+    expect((await authorizeWithReservationAdapter(sibling, adapter)).outcome).toBe("allowed");
+    expect((await authorizeWithReservationAdapter(first, adapter)).outcome).toBe("allowed");
+    const overdraw = agentInput({
+      action: { ...agentAction, childBudget: { callBudget: 1, tokenBudget: 6_000, timeBudget: 1 } },
+    });
+    await expect(authorizeWithReservationAdapter(overdraw, adapter)).resolves.toEqual({
+      outcome: "blocked", reason: { type: "parent_budget_exhausted" },
+    });
+    expect(remaining).toEqual({ callBudget: 1, tokenBudget: 5_000, timeBudget: 10_000 });
   });
 
   it("maps adapter exceptions and timeout as indeterminate without retry", async () => {

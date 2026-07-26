@@ -4,13 +4,18 @@ import {
   AGENT_CALL_RESERVATION_ACTION_DIGEST_DOMAIN,
   AGENT_CALL_RESERVATION_DRAFT_DIGEST_DOMAIN,
   AGENT_CALL_RESERVATION_RUN_CONTEXT_DIGEST_DOMAIN,
+  PARENT_BUDGET_CONSUMPTION_REPLAY_DIGEST_DOMAIN,
   canonicalAgentCallAuthorizationReservationBindingJson,
   computeAgentCallAuthorizationReservationId,
   computeAgentCallReservationActionDigest,
   computeAgentCallReservationDraftDigest,
   computeAgentCallReservationRunContextDigest,
+  computeParentBudgetConsumptionReplayId,
 } from "../../src/runtime/agent-call-reservation-digest.js";
-import { AgentCallAuthorizationReservationBindingV1Schema } from "../../src/schema/agent-call-authorization-reservation.js";
+import {
+  AgentCallAuthorizationReservationBindingV1Schema,
+  ParentBudgetConsumptionBindingV1Schema,
+} from "../../src/schema/agent-call-authorization-reservation.js";
 import { RunContextEvidencePayloadSchema } from "../../src/schema/runtime-attestation.js";
 import {
   AgentCallRuntimeActionSchema,
@@ -74,6 +79,11 @@ const binding = AgentCallAuthorizationReservationBindingV1Schema.parse({
   authorizationTime: "2026-07-23T13:00:00Z",
   authorizationValidUntilExclusive: "2026-07-23T13:04:00.000Z",
 });
+const parentBudgetBinding = ParentBudgetConsumptionBindingV1Schema.parse({
+  ...binding,
+  parentBudgetBefore: { callBudget: 3, tokenBudget: 20_000, timeBudget: 30_000 },
+  childBudget: { callBudget: 1, tokenBudget: 5_000, timeBudget: 10_000 },
+});
 
 describe("agent-call authorization reservation digests", () => {
   it("pins repository-style domains and a deterministic reservation vector", () => {
@@ -89,9 +99,23 @@ describe("agent-call authorization reservation digests", () => {
     expect(AGENT_CALL_AUTHORIZATION_RESERVATION_DIGEST_DOMAIN).toBe(
       "agent-builder/digest/agent-call-authorization-reservation/v1",
     );
+    expect(PARENT_BUDGET_CONSUMPTION_REPLAY_DIGEST_DOMAIN).toBe(
+      "agent-builder/digest/parent-budget-consumption-replay/v1",
+    );
     expect(computeAgentCallAuthorizationReservationId(binding)).toBe(
       "5dda7cf182f530b7d8230c671b9ffe474561498e1616fe8a7c196cc5bae7b84c",
     );
+  });
+
+  it("binds the replay key to both parent snapshot and child allocation", () => {
+    expect(computeParentBudgetConsumptionReplayId(parentBudgetBinding)).toMatch(/^[0-9a-f]{64}$/);
+    for (const mutation of [
+      { ...parentBudgetBinding, parentBudgetBefore: { ...parentBudgetBinding.parentBudgetBefore, callBudget: 2 } },
+      { ...parentBudgetBinding, childBudget: { ...parentBudgetBinding.childBudget, tokenBudget: 5_001 } },
+    ]) {
+      expect(computeParentBudgetConsumptionReplayId(ParentBudgetConsumptionBindingV1Schema.parse(mutation)))
+        .not.toBe(computeParentBudgetConsumptionReplayId(parentBudgetBinding));
+    }
   });
 
   it("is insertion-order invariant and binds every logical input", () => {

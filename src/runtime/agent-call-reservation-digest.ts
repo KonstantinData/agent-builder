@@ -3,8 +3,10 @@ import type { z } from "zod";
 import { canonicalize } from "../assembler/content-hash.js";
 import {
   AgentCallAuthorizationReservationBindingV1Schema,
+  ParentBudgetConsumptionBindingV1Schema,
   ReservationDigestSchema,
   type AgentCallAuthorizationReservationBindingV1,
+  type ParentBudgetConsumptionBindingV1,
   type ReservationDigest,
 } from "../schema/agent-call-authorization-reservation.js";
 import {
@@ -26,6 +28,8 @@ export const AGENT_CALL_RESERVATION_DRAFT_DIGEST_DOMAIN =
   "agent-builder/digest/agent-call-reservation-draft/v1";
 export const AGENT_CALL_AUTHORIZATION_RESERVATION_DIGEST_DOMAIN =
   "agent-builder/digest/agent-call-authorization-reservation/v1";
+export const PARENT_BUDGET_CONSUMPTION_REPLAY_DIGEST_DOMAIN =
+  "agent-builder/digest/parent-budget-consumption-replay/v1";
 
 function canonicalStrictJson<T>(schema: z.ZodType<T>, value: T): string {
   return JSON.stringify(canonicalize(schema.parse(value)));
@@ -76,5 +80,14 @@ export function computeAgentCallAuthorizationReservationId(
   return domainSeparatedDigest(
     AGENT_CALL_AUTHORIZATION_RESERVATION_DIGEST_DOMAIN,
     canonicalAgentCallAuthorizationReservationBindingJson(binding),
+  );
+}
+
+export function computeParentBudgetConsumptionReplayId(
+  binding: ParentBudgetConsumptionBindingV1,
+): ReservationDigest {
+  return domainSeparatedDigest(
+    PARENT_BUDGET_CONSUMPTION_REPLAY_DIGEST_DOMAIN,
+    canonicalStrictJson(ParentBudgetConsumptionBindingV1Schema, binding),
   );
 }

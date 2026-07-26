@@ -29,11 +29,15 @@ const binding = AgentCallAuthorizationReservationBindingV1Schema.parse({
 const request = {
   reservationId: "c".repeat(64),
   ...binding,
+  parentBudgetBefore: { callBudget: 3, tokenBudget: 20_000, timeBudget: 30_000 },
+  childBudget: { callBudget: 1, tokenBudget: 5_000, timeBudget: 10_000 },
 };
 
 const receipt = {
   ...request,
   reservedAt: "2026-07-23T13:00:01Z",
+  parentBudgetConsumedTotal: { callBudget: 1, tokenBudget: 5_000, timeBudget: 10_000 },
+  parentBudgetRemaining: { callBudget: 2, tokenBudget: 15_000, timeBudget: 20_000 },
 };
 
 describe("agent-call authorization reservation schemas", () => {
@@ -60,6 +64,8 @@ describe("agent-call authorization reservation schemas", () => {
         kind: "authorization_window_expired",
         observedAt: "2026-07-23T13:04:00Z",
       },
+      { kind: "parent_budget_exhausted", observedAt: "2026-07-23T13:00:01Z" },
+      { kind: "replay_conflict", observedAt: "2026-07-23T13:00:01Z" },
       { kind: "unavailable", condition: "store_error" },
     ]) {
       expect(AgentCallAuthorizationReservationResultV1Schema.safeParse(result).success).toBe(true);
