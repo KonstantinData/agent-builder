@@ -60,7 +60,7 @@ import {
   computeCallGraphEdgeApprovalDecisionDigest,
 } from "./edge-approval-digest.js";
 import {
-  computeAgentCallAuthorizationReservationId,
+  computeParentBudgetConsumptionReplayId,
   computeAgentCallReservationActionDigest,
   computeAgentCallReservationDraftDigest,
   computeAgentCallReservationRunContextDigest,
@@ -927,9 +927,15 @@ function resumeAgentCallAuthorization(
     authorizationTime: request.asOf,
     authorizationValidUntilExclusive,
   };
-  const parsedReservationRequest = AgentCallAuthorizationReservationRequestV1Schema.parse({
-    reservationId: computeAgentCallAuthorizationReservationId(binding),
+  const parentBudgetBefore = remainingRuntimeBudgetFromContext(callContext);
+  const parentBudgetBinding = {
     ...binding,
+    parentBudgetBefore,
+    childBudget: action.childBudget,
+  };
+  const parsedReservationRequest = AgentCallAuthorizationReservationRequestV1Schema.parse({
+    reservationId: computeParentBudgetConsumptionReplayId(parentBudgetBinding),
+    ...parentBudgetBinding,
   });
   const reservationRequest = Object.freeze({
     ...parsedReservationRequest,
@@ -964,7 +970,7 @@ function receiptMatchesReservationRequest(
     ...binding
   } = request;
   return (
-    request.reservationId === computeAgentCallAuthorizationReservationId(binding) &&
+    request.reservationId === computeParentBudgetConsumptionReplayId(binding) &&
     receipt.reservationId === request.reservationId &&
     edgeSubjectsEqual(receipt.subject, request.subject) &&
     receipt.expectedAuthorityRevision === request.expectedAuthorityRevision &&
@@ -975,6 +981,18 @@ function receiptMatchesReservationRequest(
     receipt.childRunContextDraftDigest === request.childRunContextDraftDigest &&
     receipt.authorizationTime === request.authorizationTime &&
     receipt.authorizationValidUntilExclusive === request.authorizationValidUntilExclusive &&
+    receipt.parentBudgetBefore.callBudget === request.parentBudgetBefore.callBudget &&
+    receipt.parentBudgetBefore.tokenBudget === request.parentBudgetBefore.tokenBudget &&
+    receipt.parentBudgetBefore.timeBudget === request.parentBudgetBefore.timeBudget &&
+    receipt.childBudget.callBudget === request.childBudget.callBudget &&
+    receipt.childBudget.tokenBudget === request.childBudget.tokenBudget &&
+    receipt.childBudget.timeBudget === request.childBudget.timeBudget &&
+    receipt.parentBudgetConsumedTotal.callBudget >= request.childBudget.callBudget &&
+    receipt.parentBudgetConsumedTotal.tokenBudget >= request.childBudget.tokenBudget &&
+    receipt.parentBudgetConsumedTotal.timeBudget >= request.childBudget.timeBudget &&
+    receipt.parentBudgetConsumedTotal.callBudget + receipt.parentBudgetRemaining.callBudget === request.parentBudgetBefore.callBudget &&
+    receipt.parentBudgetConsumedTotal.tokenBudget + receipt.parentBudgetRemaining.tokenBudget === request.parentBudgetBefore.tokenBudget &&
+    receipt.parentBudgetConsumedTotal.timeBudget + receipt.parentBudgetRemaining.timeBudget === request.parentBudgetBefore.timeBudget &&
     Date.parse(receipt.reservedAt) >= Date.parse(request.authorizationTime) &&
     Date.parse(receipt.reservedAt) < Date.parse(request.authorizationValidUntilExclusive)
   );
@@ -1047,6 +1065,14 @@ function resumeAgentCallAuthorizationReservation(
     };
   }
 
+  if (result.kind === "parent_budget_exhausted") {
+    return { outcome: "blocked", reason: { type: "parent_budget_exhausted" } };
+  }
+
+  if (result.kind === "replay_conflict") {
+    return { outcome: "blocked", reason: { type: "parent_budget_replay_conflict" } };
+  }
+
   if (
     observedAtEpochMs < Date.parse(plan.request.authorizationValidUntilExclusive)
   ) {
@@ -1083,9 +1109,9 @@ function resumeAgentCallAuthorizationReservation(
  *   host/store-local reservation receipt. An external trusted resolver and
  *   signer must still assign child identity and runtime authority.
  * - Context attestation proves origin and integrity of presented claims, not
- *   parent spend consumption, parent-child issuance, or current run identity.
- *   The reservation is single only as a logical local authorization binding;
- *   sibling spend-down and execution replay require later boundaries.
+ *   parent-child issuance or current run identity. A host-injected linearizable
+ *   reservation store consumes the exact child allocation against the presented
+ *   parent snapshot and prevents sibling overdraw/replay by its replay key.
  * - A host-bound point-in-time resolver proves canonical edge authority as of
  *   the same trusted authorization instant used by every lease check. decidedAt
  *   stays audit history and never starts the lease.
@@ -1094,9 +1120,9 @@ function resumeAgentCallAuthorizationReservation(
  * - The host-bound reservation adapter must atomically compare canonical
  *   authority and insert the reservation. Its local receipt is not portable
  *   authority and proves neither dispatch nor at-most-once execution.
- * - External signing, private-key custody, KMS/HSM, key revocation,
- *   parent-budget consumption, sibling replay, synchronous lifecycle lookup,
- *   process liveness, channel resolution, and real execution remain out of scope.
+ * - External signing, private-key custody, KMS/HSM, key revocation, parent-child
+ *   issuance, receipt redemption, synchronous lifecycle lookup, process liveness,
+ *   channel resolution, and real execution remain out of scope.
  */
 export type CanonicalEdgeAuthorityResolver = (
   request: CanonicalAuthorityLookupRequestV1,

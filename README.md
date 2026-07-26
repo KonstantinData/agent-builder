@@ -290,9 +290,10 @@ This package intentionally keeps several capabilities out of scope:
 - no single-use edge authority or nonce consumption; canonical currentness and
   one logical reservation per deterministic authorization attempt do not prevent a
   later executor from presenting or executing the local receipt repeatedly
-- no parent-budget consumption, sibling/nonce replay protection, or proof that a
-  presented parent run actually issued a child context; those require a runtime store
-  or parent-decision linkage beyond signed run-context integrity
+- no parent-context issuance proof, receipt redemption, or at-most-once execution.
+  Parent-budget consumption and sibling replay protection are limited to an injected,
+  linearizable, host/store-local reservation adapter; the package ships neither that
+  store nor a portable receipt or execution adapter
 - no runtime budget increases along a call chain
 - no runtime authorization from raw, caller-supplied call-graph edges
 - no array-order selection among matching call-graph approvals; only the canonical
