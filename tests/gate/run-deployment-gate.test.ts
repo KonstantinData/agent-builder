@@ -17,18 +17,18 @@ function metadataInState(state: LifecycleState): AgentSpecRuntimeMetadata {
     version: "1.0.0",
     state,
     stateHistory: [
-      { state: "draft", actor: "builder-agent", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
+      { state: "draft", actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
       { state: "in_review", actor: "policy-harness", timestamp: "2026-07-20T10:05:00Z", reason: "schema validated" },
     ],
-    requestor: "builder-agent",
+    requestor: "agent-builder",
   });
 }
 
 const inReviewMetadata = metadataInState("in_review");
 
-// Distinct from the requestor ("builder-agent") so separation of duties holds.
+// Distinct from the requestor ("agent-builder") so separation of duties holds.
 const ctx: TrustedDecisionContext = {
-  principal: makeTestPrincipal("release-manager"),
+  principal: makeTestPrincipal("konstantin"),
   decidedAt: "2026-07-23T12:00:00Z",
   artifactId: "approval-crm-enricher-001",
 };
@@ -74,9 +74,9 @@ describe("runDeploymentGate", () => {
     expect(result.approval).toEqual({
       type: "agent_spec",
       artifactId: "approval-crm-enricher-001",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "approved",
-      decidedBy: "release-manager",
+      decidedBy: "konstantin",
       decidedAt: "2026-07-23T12:00:00Z",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -161,7 +161,7 @@ describe("runDeploymentGate", () => {
     expect(result.metadata.stateHistory).toHaveLength(inReviewMetadata.stateHistory.length + 1);
     expect(result.metadata.stateHistory.at(-1)).toEqual({
       state: "approved",
-      actor: "release-manager",
+      actor: "konstantin",
       timestamp: "2026-07-23T12:00:00Z",
       reason: "signed off in change board",
     });
@@ -176,11 +176,34 @@ describe("runDeploymentGate", () => {
   });
 
   it("enforces separation of duties: the requestor cannot approve their own spec", () => {
-    const selfCtx: TrustedDecisionContext = { ...ctx, principal: makeTestPrincipal("builder-agent") };
+    const selfCtx: TrustedDecisionContext = { ...ctx, principal: makeTestPrincipal("agent-builder") };
     const result = runDeploymentGate(validAgentSpecContent, inReviewMetadata, approvedInitialPolicy, selfCtx);
     expect(result).toEqual({
       outcome: "blocked",
-      reason: { type: "self_approval_forbidden", principalId: "builder-agent" },
+      reason: { type: "self_approval_forbidden", principalId: "agent-builder" },
+    });
+  });
+
+  it("blocks a verified but non-authorized approver", () => {
+    const result = runDeploymentGate(validAgentSpecContent, inReviewMetadata, approvedInitialPolicy, {
+      ...ctx,
+      principal: makeTestPrincipal("other-human"),
+    });
+    expect(result).toEqual({
+      outcome: "blocked",
+      reason: { type: "approver_not_authorized", principalId: "other-human" },
+    });
+  });
+
+  it("blocks a spec not submitted by the v0.1 Builder applicant", () => {
+    const metadata = AgentSpecRuntimeMetadataSchema.parse({
+      ...inReviewMetadata,
+      requestor: "other-applicant",
+    });
+    const result = runDeploymentGate(validAgentSpecContent, metadata, approvedInitialPolicy, ctx);
+    expect(result).toEqual({
+      outcome: "blocked",
+      reason: { type: "applicant_not_builder", requestor: "other-applicant" },
     });
   });
 

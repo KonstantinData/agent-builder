@@ -43,6 +43,8 @@ export type DeploymentGateRejectionReason =
   | { readonly type: "evaluation_evidence_missing"; readonly delta: DeltaClassification | "initial" }
   | { readonly type: "state_not_gateable"; readonly state: LifecycleState }
   | { readonly type: "self_approval_forbidden"; readonly principalId: string }
+  | { readonly type: "applicant_not_builder"; readonly requestor: string }
+  | { readonly type: "approver_not_authorized"; readonly principalId: string }
   | { readonly type: "subject_mismatch"; readonly specId: SpecId; readonly version: string };
 
 /**
