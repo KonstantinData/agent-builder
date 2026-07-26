@@ -29,3 +29,9 @@ export function computeContentHash(content: Omit<AgentSpecContent, "contentHash"
   const serialized = JSON.stringify(canonicalize(content));
   return createHash("sha256").update(serialized).digest("hex");
 }
+
+/** Recomputes the canonical hash at a trust boundary before content is bound. */
+export function contentHashMatches(content: AgentSpecContent): boolean {
+  const { contentHash, ...hashableContent } = content;
+  return contentHash === computeContentHash(hashableContent);
+}

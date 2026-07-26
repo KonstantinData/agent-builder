@@ -4,7 +4,7 @@ import { AgentSpecRuntimeMetadataSchema, type AgentSpecRuntimeMetadata } from ".
 import { ApprovalArtifactSchema, type ApprovalArtifact } from "../../src/schema/approval-artifact.js";
 import type { TrustedRuntimeBindingContext } from "../../src/schema/runtime-binding.js";
 import { MAX_RUNTIME_BINDING_TTL_SECONDS } from "../../src/schema/runtime-binding-validity.js";
-import { validAgentSpecContent } from "../fixtures/specs.js";
+import { evaluationFor, validAgentSpecContent } from "../fixtures/specs.js";
 
 function metadataInState(state: string, overrides: Record<string, unknown> = {}): AgentSpecRuntimeMetadata {
   return AgentSpecRuntimeMetadataSchema.parse({
@@ -32,11 +32,11 @@ function approval(overrides: Record<string, unknown> = {}): ApprovalArtifact {
     decidedAt: "2026-07-23T12:00:00Z",
     specId: "spec-crm-enricher",
     version: "1.0.0",
-    contentHash: "hash-v1",
+    contentHash: validAgentSpecContent.contentHash,
     evidence: {
       policyOutcome: "approved_pending_gate",
       delta: "initial",
-      evaluationRef: { suiteRef: "suite-crm-v1", score: 0.95 },
+      evaluationRef: evaluationFor(validAgentSpecContent),
     },
     ...overrides,
   });
@@ -64,7 +64,7 @@ describe("createRuntimeBinding", () => {
       bindingId: "binding-crm-enricher-001",
       specId: "spec-crm-enricher",
       version: "1.0.0",
-      contentHash: "hash-v1",
+      contentHash: validAgentSpecContent.contentHash,
       approvalArtifactId: "approval-crm-enricher-001",
       runtimeInstanceId: "runtime-crm-enricher-001",
       deployedAt: "2026-07-23T12:30:00Z",
@@ -73,7 +73,7 @@ describe("createRuntimeBinding", () => {
     expect(result.metadata.state).toBe("deployed");
     expect(result.metadata.deploymentBinding).toEqual({
       bindingId: "binding-crm-enricher-001",
-      contentHash: "hash-v1",
+      contentHash: validAgentSpecContent.contentHash,
       runtimeInstanceId: "runtime-crm-enricher-001",
       deployedAt: "2026-07-23T12:30:00Z",
       ttl: 3600,
@@ -202,11 +202,23 @@ describe("createRuntimeBinding", () => {
     });
   });
 
+  it("fails closed when the bound spec no longer recomputes to its content hash", () => {
+    const tampered = { ...validAgentSpecContent, objective: "tampered after approval" };
+    expect(createRuntimeBinding({ spec: tampered, metadata: approvedMetadata, approval: approval() }, ctx)).toEqual({
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_content_hash_mismatch",
+        specId: "spec-crm-enricher",
+        version: "1.0.0",
+      },
+    });
+  });
+
   it("blocks an existing deployment binding on approved metadata", () => {
     const metadata = metadataInState("approved", {
       deploymentBinding: {
         bindingId: "binding-existing",
-        contentHash: "hash-v1",
+        contentHash: validAgentSpecContent.contentHash,
         runtimeInstanceId: "runtime-existing",
         deployedAt: "2026-07-23T12:15:00Z",
         ttl: 3600,

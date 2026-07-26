@@ -8,7 +8,7 @@ import {
   type LifecycleState,
 } from "../../src/schema/agent-spec-runtime-metadata.js";
 import type { PolicyEvaluationResult, PolicySubject } from "../../src/harness/harness-types.js";
-import { validAgentSpecContent } from "../fixtures/specs.js";
+import { evaluationFor, validAgentSpecContent } from "../fixtures/specs.js";
 import { makeTestPrincipal } from "../support/approval-principal.js";
 
 function metadataInState(state: LifecycleState): AgentSpecRuntimeMetadata {
@@ -33,13 +33,17 @@ const ctx: TrustedDecisionContext = {
   artifactId: "approval-crm-enricher-001",
 };
 
-const subject: PolicySubject = { specId: validAgentSpecContent.specId, version: "1.0.0", contentHash: "hash-v1" };
+const subject: PolicySubject = {
+  specId: validAgentSpecContent.specId,
+  version: validAgentSpecContent.version,
+  contentHash: validAgentSpecContent.contentHash,
+};
 
 const approvedInitialPolicy: PolicyEvaluationResult = {
   outcome: "approved_pending_gate",
   subject,
   delta: "initial",
-  evaluation: { suiteRef: "suite-crm-v1", score: 0.95 },
+  evaluation: evaluationFor(validAgentSpecContent),
 };
 const approvedReducingPolicy: PolicyEvaluationResult = {
   outcome: "approved_pending_gate",
@@ -60,7 +64,7 @@ const rejectedWithEvalPolicy: PolicyEvaluationResult = {
   outcome: "rejected",
   subject,
   reasons: [{ type: "evaluation_below_threshold", score: 0.5, passThreshold: 0.9 }],
-  evaluation: { suiteRef: "suite-crm-v1", score: 0.5 },
+  evaluation: evaluationFor(validAgentSpecContent, { score: 0.5 }),
 };
 const evalRequiredPolicy: PolicyEvaluationResult = { outcome: "evaluation_required", subject };
 
@@ -80,11 +84,11 @@ describe("runDeploymentGate", () => {
       decidedAt: "2026-07-23T12:00:00Z",
       specId: "spec-crm-enricher",
       version: "1.0.0",
-      contentHash: "hash-v1",
+      contentHash: validAgentSpecContent.contentHash,
       evidence: {
         policyOutcome: "approved_pending_gate",
         delta: "initial",
-        evaluationRef: { suiteRef: "suite-crm-v1", score: 0.95 },
+        evaluationRef: evaluationFor(validAgentSpecContent),
       },
     });
     // The emitted artifact must satisfy the persisted schema.
@@ -139,7 +143,7 @@ describe("runDeploymentGate", () => {
     expect(result.approval.evidence).toEqual({
       policyOutcome: "rejected",
       rejectionReasonCodes: ["evaluation_below_threshold"],
-      evaluationRef: { suiteRef: "suite-crm-v1", score: 0.5 },
+      evaluationRef: evaluationFor(validAgentSpecContent, { score: 0.5 }),
     });
     // A rejected gate output must still satisfy the persisted schema.
     expect(ApprovalArtifactSchema.safeParse(result.approval).success).toBe(true);
@@ -232,6 +236,27 @@ describe("runDeploymentGate", () => {
     const result = runDeploymentGate(validAgentSpecContent, mismatchedMetadata, approvedInitialPolicy, ctx);
     expect(result.outcome).toBe("blocked");
     if (result.outcome === "blocked") expect(result.reason.type).toBe("subject_mismatch");
+  });
+
+  it("fails closed when candidate content does not recompute to its declared hash", () => {
+    const tampered = { ...validAgentSpecContent, objective: "tampered after hashing" };
+    expect(runDeploymentGate(tampered, inReviewMetadata, approvedInitialPolicy, ctx)).toEqual({
+      outcome: "blocked",
+      reason: { type: "content_hash_mismatch", specId: "spec-crm-enricher", version: "1.0.0" },
+    });
+  });
+
+  it("blocks a forged policy result that carries evaluation evidence for another candidate", () => {
+    const result = runDeploymentGate(validAgentSpecContent, inReviewMetadata, {
+      ...approvedInitialPolicy,
+      evaluation: evaluationFor(validAgentSpecContent, {
+        subject: { ...subject, contentHash: "other-content" },
+      }),
+    }, ctx);
+    expect(result).toEqual({
+      outcome: "blocked",
+      reason: { type: "evaluation_evidence_subject_mismatch", specId: "spec-crm-enricher", version: "1.0.0" },
+    });
   });
 
   it("never transitions to `deployed` for any policy outcome (Step 5 is not a deployment executor)", () => {

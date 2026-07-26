@@ -5,6 +5,7 @@ import {
   DecidedCallGraphEdgeApprovalSchema,
 } from "../../src/schema/approval-artifact.js";
 import { edgeAToB } from "../fixtures/specs.js";
+import { evaluationFor, validAgentSpecContent } from "../fixtures/specs.js";
 
 describe("ApprovalArtifactSchema", () => {
   it("accepts an agent_spec approval artifact bound to a contentHash and evidence", () => {
@@ -17,11 +18,11 @@ describe("ApprovalArtifactSchema", () => {
       decidedAt: "2026-07-23T12:00:00Z",
       specId: "spec-crm-enricher",
       version: "1.0.0",
-      contentHash: "hash-v1",
+      contentHash: validAgentSpecContent.contentHash,
       evidence: {
         policyOutcome: "approved_pending_gate",
         delta: "initial",
-        evaluationRef: { suiteRef: "suite-crm-v1", score: 0.95 },
+        evaluationRef: evaluationFor(validAgentSpecContent),
       },
     };
     expect(ApprovalArtifactSchema.safeParse(candidate).success).toBe(true);

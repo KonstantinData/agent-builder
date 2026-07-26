@@ -75,7 +75,8 @@ export function evaluatePolicy(
     // Fail-closed: a schema-invalid outcome (NaN/out-of-range score, empty
     // suiteRef) is rejected structurally — never trusted into the
     // `score < passThreshold` comparison, never retained as evidence.
-    if (!EvaluationOutcomeSchema.safeParse(evalOutcome).success) {
+    const parsedEvaluation = EvaluationOutcomeSchema.safeParse(evalOutcome);
+    if (!parsedEvaluation.success) {
       return {
         outcome: "rejected",
         subject,
@@ -84,13 +85,45 @@ export function evaluatePolicy(
         ],
       };
     }
-    const evalReasons = checkEvaluationOutcome(candidate, evalOutcome);
+    const validatedEvaluation = parsedEvaluation.data;
+    const evaluationSubject: PolicySubject = validatedEvaluation.subject;
+    if (
+      evaluationSubject.specId !== subject.specId ||
+      evaluationSubject.version !== subject.version ||
+      evaluationSubject.contentHash !== subject.contentHash
+    ) {
+      return {
+        outcome: "rejected",
+        subject,
+        reasons: [{ type: "evaluation_subject_mismatch", expected: subject, actual: evaluationSubject }],
+      };
+    }
+    const referenceTime = Date.parse(context.evaluationReferenceTime);
+    if (Number.isNaN(referenceTime)) {
+      return {
+        outcome: "rejected",
+        subject,
+        reasons: [{ type: "evaluation_reference_time_invalid", referenceTime: context.evaluationReferenceTime }],
+      };
+    }
+    if (Date.parse(validatedEvaluation.completedAt) > referenceTime) {
+      return {
+        outcome: "rejected",
+        subject,
+        reasons: [{
+          type: "evaluation_completed_in_future",
+          completedAt: validatedEvaluation.completedAt,
+          referenceTime: context.evaluationReferenceTime,
+        }],
+      };
+    }
+    const evalReasons = checkEvaluationOutcome(candidate, validatedEvaluation);
     if (evalReasons.length > 0) {
       // Retain the (valid) outcome that caused the rejection as held evidence.
-      return { outcome: "rejected", subject, reasons: evalReasons, evaluation: evalOutcome };
+      return { outcome: "rejected", subject, reasons: evalReasons, evaluation: validatedEvaluation };
     }
     // Retain the outcome that was actually checked as held evidence.
-    return { outcome: "approved_pending_gate", subject, delta, evaluation: evalOutcome };
+    return { outcome: "approved_pending_gate", subject, delta, evaluation: validatedEvaluation };
   }
 
   if (evaluationNeeded) {

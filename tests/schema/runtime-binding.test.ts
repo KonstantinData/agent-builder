@@ -8,7 +8,7 @@ import {
 } from "../../src/schema/runtime-binding.js";
 import { AgentSpecRuntimeMetadataSchema } from "../../src/schema/agent-spec-runtime-metadata.js";
 import { ApprovalArtifactSchema } from "../../src/schema/approval-artifact.js";
-import { validAgentSpecContent } from "../fixtures/specs.js";
+import { evaluationFor, validAgentSpecContent } from "../fixtures/specs.js";
 
 const approvedMetadata = AgentSpecRuntimeMetadataSchema.parse({
   specId: "spec-crm-enricher",
@@ -30,11 +30,11 @@ const approvedArtifact = ApprovalArtifactSchema.parse({
   decidedAt: "2026-07-23T12:00:00Z",
   specId: "spec-crm-enricher",
   version: "1.0.0",
-  contentHash: "hash-v1",
+    contentHash: validAgentSpecContent.contentHash,
   evidence: {
     policyOutcome: "approved_pending_gate",
     delta: "initial",
-    evaluationRef: { suiteRef: "suite-crm-v1", score: 0.95 },
+      evaluationRef: evaluationFor(validAgentSpecContent),
   },
 });
 
