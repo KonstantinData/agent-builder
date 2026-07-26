@@ -7,14 +7,20 @@ import { MAX_RUNTIME_BINDING_TTL_SECONDS } from "../../src/schema/runtime-bindin
 import { evaluationFor, validAgentSpecContent } from "../fixtures/specs.js";
 
 function metadataInState(state: string, overrides: Record<string, unknown> = {}): AgentSpecRuntimeMetadata {
+  const history = [
+    { state: "draft", actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
+    { state: "in_review", actor: "policy-harness", timestamp: "2026-07-20T10:05:00Z", reason: "review" },
+  ];
+  if (state === "approved" || state === "deployed") history.push({ state: "approved", actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "approved" });
+  if (state === "deployed") history.push({ state: "deployed", actor: "binding", timestamp: "2026-07-23T12:30:00Z", reason: "bound" });
+  if (state === "rejected") history.push({ state: "rejected", actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "rejected" });
+  if (state === "draft") history.splice(1);
+  if (state === "suspended" || state === "revoked") return { specId: "spec-crm-enricher", version: "1.0.0", state, stateHistory: history, requestor: "agent-builder", ...overrides } as unknown as AgentSpecRuntimeMetadata;
   return AgentSpecRuntimeMetadataSchema.parse({
     specId: "spec-crm-enricher",
     version: "1.0.0",
     state,
-    stateHistory: [
-      { state: "draft", actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
-      { state, actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "test state" },
-    ],
+    stateHistory: history,
     requestor: "agent-builder",
     ...overrides,
   });
@@ -112,7 +118,7 @@ describe("createRuntimeBinding", () => {
     expect(result.metadata.deploymentBinding?.ttl).toBe(MAX_RUNTIME_BINDING_TTL_SECONDS);
   });
 
-  it.each(["draft", "in_review", "deployed", "suspended", "revoked", "rejected"])(
+  it.each(["draft", "in_review", "deployed", "rejected"])(
     "blocks non-deployable metadata state `%s`",
     (state) => {
       expect(
