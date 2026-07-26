@@ -23,6 +23,10 @@ versioning a production-ready agent. It never means silently switching on a proc
    answers. It then records a `BuilderIntentDraft`: requested name, purpose,
    capabilities and requested agent-call roles are a proposal only. See
    [Guided Contextual Briefing v1](guided-contextual-briefing-v1.md).
+   A draft may be adapted only from an exact immutable template version; feedback
+   creates a new template version only after explicit approval and never changes
+   an already delivered customer package. See [Template and Feedback Governance
+   v1](template-feedback-governance-v1.md).
 2. **Assemble the spec.** The Spec Assembler validates the draft and resolves each role
    to a concrete already-approved agent version. It produces immutable
    `AgentSpecContent` and its deterministic content hash. Wildcards and unresolved
