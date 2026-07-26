@@ -35,6 +35,12 @@ Its job is not to execute agents directly. It turns builder intent into validate
 versioned agent specifications, evaluates them against policy, and produces auditable
 approval decisions without deploying or executing the resulting agents.
 
+Creating an agent therefore creates a versioned, evaluated and human-approved agent
+description; it does not start a process. The Builder prepares the proposal, and
+Konstantin is the sole verified human approver in v0.1. Requested capabilities are
+decided per agent draft, never globally pre-authorized. See
+[`Agent Creation Lifecycle v0.1`](docs/architecture/agent-creation-lifecycle-v0.1.md).
+
 The core boundary is:
 
 > The Builder Agent proposes specs. The Control Plane grants capabilities, edges,
