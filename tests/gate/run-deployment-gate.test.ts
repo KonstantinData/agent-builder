@@ -6,20 +6,27 @@ import {
   AgentSpecRuntimeMetadataSchema,
   type AgentSpecRuntimeMetadata,
   type LifecycleState,
+  type StateHistoryEntry,
 } from "../../src/schema/agent-spec-runtime-metadata.js";
 import type { PolicyEvaluationResult, PolicySubject } from "../../src/harness/harness-types.js";
 import { evaluationFor, validAgentSpecContent } from "../fixtures/specs.js";
 import { makeTestPrincipal } from "../support/approval-principal.js";
 
 function metadataInState(state: LifecycleState): AgentSpecRuntimeMetadata {
+  const stateHistory: StateHistoryEntry[] = [
+    { state: "draft" as const, actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
+    { state: "in_review" as const, actor: "policy-harness", timestamp: "2026-07-20T10:05:00Z", reason: "schema validated" },
+  ];
+  if (state === "approved" || state === "deployed") stateHistory.push({ state: "approved", actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "approved" });
+  if (state === "deployed") stateHistory.push({ state: "deployed", actor: "binding", timestamp: "2026-07-23T12:30:00Z", reason: "bound" });
+  if (state === "rejected") stateHistory.push({ state: "rejected", actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "rejected" });
+  if (state === "draft") stateHistory.splice(1);
+  if (state === "suspended" || state === "revoked") return { specId: "spec-crm-enricher", version: "1.0.0", state, stateHistory, requestor: "agent-builder" } as unknown as AgentSpecRuntimeMetadata;
   return AgentSpecRuntimeMetadataSchema.parse({
     specId: "spec-crm-enricher",
     version: "1.0.0",
     state,
-    stateHistory: [
-      { state: "draft", actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
-      { state: "in_review", actor: "policy-harness", timestamp: "2026-07-20T10:05:00Z", reason: "schema validated" },
-    ],
+    stateHistory,
     requestor: "agent-builder",
   });
 }

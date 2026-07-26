@@ -14,9 +14,10 @@ const approvedMetadata = AgentSpecRuntimeMetadataSchema.parse({
   specId: "spec-crm-enricher",
   version: "1.0.0",
   state: "approved",
-  stateHistory: [
-    { state: "draft", actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
-    { state: "approved", actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "approved" },
+    stateHistory: [
+      { state: "draft", actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
+      { state: "in_review", actor: "policy-harness", timestamp: "2026-07-20T10:05:00Z", reason: "review" },
+      { state: "approved", actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "approved" },
   ],
   requestor: "agent-builder",
 });

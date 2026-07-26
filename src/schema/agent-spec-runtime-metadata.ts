@@ -4,6 +4,7 @@ import {
   Rfc3339WithOffsetSchema,
   RuntimeBindingTtlSecondsSchema,
 } from "./runtime-binding-validity.js";
+import { isImplementedLifecycleTransition } from "../invariants/lifecycle-transition.js";
 
 /**
  * Section 4 of the architecture doc: schema validation, policy lint, and
@@ -25,7 +26,7 @@ export const StateHistoryEntrySchema = z
   .object({
     state: LifecycleStateSchema,
     actor: z.string().min(1),
-    timestamp: z.string().min(1),
+    timestamp: Rfc3339WithOffsetSchema,
     reason: z.string().min(1),
   })
   .strict();
@@ -62,5 +63,26 @@ export const AgentSpecRuntimeMetadataSchema = z
     revokedReason: z.string().optional(),
     supersededBy: z.string().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((metadata, ctx) => {
+    const first = metadata.stateHistory[0];
+    const last = metadata.stateHistory.at(-1);
+    if (first === undefined || first.state !== "draft") {
+      ctx.addIssue({ code: "custom", path: ["stateHistory"], message: "history must begin at draft" });
+    }
+    if (last === undefined || last.state !== metadata.state) {
+      ctx.addIssue({ code: "custom", path: ["stateHistory"], message: "current state must equal history tail" });
+    }
+    for (let index = 1; index < metadata.stateHistory.length; index += 1) {
+      const previous = metadata.stateHistory[index - 1];
+      const current = metadata.stateHistory[index];
+      if (previous === undefined || current === undefined) continue;
+      if (!isImplementedLifecycleTransition(previous.state, current.state)) {
+        ctx.addIssue({ code: "custom", path: ["stateHistory", index, "state"], message: "lifecycle transition is not implemented" });
+      }
+      if (Date.parse(current.timestamp) <= Date.parse(previous.timestamp)) {
+        ctx.addIssue({ code: "custom", path: ["stateHistory", index, "timestamp"], message: "history timestamps must increase" });
+      }
+    }
+  });
 export type AgentSpecRuntimeMetadata = z.infer<typeof AgentSpecRuntimeMetadataSchema>;
