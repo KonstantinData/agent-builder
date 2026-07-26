@@ -13,3 +13,4 @@ export * from "./runtime-authorization.js";
 export * from "./runtime-binding.js";
 export * from "./canonical-edge-authority.js";
 export * from "./agent-call-authorization-reservation.js";
+export * from "./tool-scope.js";

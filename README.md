@@ -23,6 +23,10 @@ can retain its immutable roadmap anchor while binding execution to the exact cur
 The attended [`Roadmap Base Reconciliation Policy v0.2`](docs/architecture/roadmap-base-reconciliation-v0.2.md)
 preserves v0.1 replay and admits one fully pinned historical PR 20 merge record while
 requiring the policy-migration PR itself to be a squash merge; it grants no merge bypass.
+[`Tool Scope Model v0.1`](docs/architecture/tool-scope-model-v0.1.md) adds a strict,
+versioned structural scope representation and comparison evidence, while deliberately
+keeping runtime tool authorization exact-only until a separately accepted per-tool
+containment contract exists.
 Further Claude collaboration is retired. The
 [`Human Attended Contract Lock v0.1`](docs/architecture/human-attended-contract-lock-v0.1.md)
 accepts only a host-verified, expiring, digest-bound human approval for an exact

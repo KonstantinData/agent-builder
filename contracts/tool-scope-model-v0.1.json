@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "tool-scope-model-contract/1",
+  "contractVersion": "0.1",
+  "modelVersion": "tool-scope/1",
+  "legacyModelVersion": "legacy-exact/1",
+  "toolCatalog": [
+    "http.fetch",
+    "fs.read",
+    "fs.write",
+    "db.query",
+    "email.send",
+    "crm.enrich"
+  ],
+  "selectorKeyCatalog": [
+    "namespace",
+    "resource",
+    "subject"
+  ],
+  "canonicalization": {
+    "selectorOrder": "strict_ascending_by_key",
+    "duplicateSelectorKeys": "rejected",
+    "wildcards": "rejected",
+    "unknownFields": "rejected"
+  },
+  "comparisonResults": [
+    "equal",
+    "disjoint",
+    "indeterminate"
+  ],
+  "containment": {
+    "enabled": false,
+    "narrowerResultAvailable": false,
+    "runtimeAuthorizationChange": "none",
+    "legacyBehavior": "exact_only"
+  },
+  "failClosed": {
+    "unknownTool": true,
+    "unknownSelector": true,
+    "crossModelComparison": "indeterminate",
+    "differentOpaqueLegacyScope": "indeterminate"
+  }
+}
