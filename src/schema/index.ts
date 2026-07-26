@@ -1,5 +1,6 @@
 export * from "./common.js";
 export * from "./builder-intent-draft.js";
+export * from "./guided-briefing.js";
 export * from "./agent-spec-content.js";
 export * from "./agent-spec-runtime-metadata.js";
 export * from "./agent-call-policy-edge.js";

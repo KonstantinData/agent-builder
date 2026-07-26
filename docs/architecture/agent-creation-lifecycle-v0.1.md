@@ -17,8 +17,12 @@ versioning a production-ready agent. It never means silently switching on a proc
 
 ## Lifecycle
 
-1. **Capture intent.** The Builder records a `BuilderIntentDraft`: requested name,
-   purpose, capabilities and requested agent-call roles are a proposal only.
+1. **Complete the guided briefing and capture intent.** The Builder first passes
+   the contextual briefing build-start gate: flexible, agent-specific questions
+   cover the six internal completeness topics and have retained sanitised
+   answers. It then records a `BuilderIntentDraft`: requested name, purpose,
+   capabilities and requested agent-call roles are a proposal only. See
+   [Guided Contextual Briefing v1](guided-contextual-briefing-v1.md).
 2. **Assemble the spec.** The Spec Assembler validates the draft and resolves each role
    to a concrete already-approved agent version. It produces immutable
    `AgentSpecContent` and its deterministic content hash. Wildcards and unresolved

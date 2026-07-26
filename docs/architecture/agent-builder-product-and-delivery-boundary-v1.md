@@ -18,7 +18,8 @@ summarize the resulting plan, and build only after the dialogue is complete.
 The following areas are an internal completeness framework, not a fixed questionnaire:
 
 - workflow and business outcome;
-- required information and allowed systems;
+- required information;
+- allowed systems;
 - decision boundaries and human escalation;
 - expected output and tone;
 - tests and acceptance evidence.
