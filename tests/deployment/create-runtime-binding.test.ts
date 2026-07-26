@@ -12,10 +12,10 @@ function metadataInState(state: string, overrides: Record<string, unknown> = {})
     version: "1.0.0",
     state,
     stateHistory: [
-      { state: "draft", actor: "builder-agent", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
-      { state, actor: "release-manager", timestamp: "2026-07-23T12:00:00Z", reason: "test state" },
+      { state: "draft", actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
+      { state, actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "test state" },
     ],
-    requestor: "builder-agent",
+    requestor: "agent-builder",
     ...overrides,
   });
 }
@@ -26,9 +26,9 @@ function approval(overrides: Record<string, unknown> = {}): ApprovalArtifact {
   return ApprovalArtifactSchema.parse({
     type: "agent_spec",
     artifactId: "approval-crm-enricher-001",
-    requestedBy: "builder-agent",
+    requestedBy: "agent-builder",
     decision: "approved",
-    decidedBy: "release-manager",
+    decidedBy: "konstantin",
     decidedAt: "2026-07-23T12:00:00Z",
     specId: "spec-crm-enricher",
     version: "1.0.0",
@@ -177,19 +177,16 @@ describe("createRuntimeBinding", () => {
     });
   });
 
-  it("blocks approved artifacts missing decidedBy or decidedAt", () => {
+  it("fails closed when a malformed approved artifact reaches the binding boundary", () => {
+    const malformed = { ...approval(), decidedBy: undefined } as unknown as ApprovalArtifact;
     expect(
       createRuntimeBinding(
-        {
-          spec: validAgentSpecContent,
-          metadata: approvedMetadata,
-          approval: approval({ decidedBy: undefined }),
-        },
+        { spec: validAgentSpecContent, metadata: approvedMetadata, approval: malformed },
         ctx,
       ),
     ).toEqual({
       outcome: "blocked",
-      reason: { type: "runtime_binding_approval_invalid", reason: "approval_decision_metadata_missing" },
+      reason: { type: "input_invalid", reason: "schema_validation_failed" },
     });
   });
 

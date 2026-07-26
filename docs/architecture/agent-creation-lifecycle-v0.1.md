@@ -25,9 +25,13 @@ description. It never means silently switching on a process.
    production data or credentials. Every declared evaluation requirement must pass.
 5. **Obtain human approval.** The Deployment Gate binds content, policy subject and
    runtime metadata to the same candidate. Konstantin is the sole verified human
-   approver in v0.1. The Builder is always the applicant and can never approve its own
-   proposal. If Konstantin were the applicant, the gate must block self-approval; no
-   alternate approver exists by default.
+approver in v0.1. The Builder is always the applicant and can never approve its own
+proposal. If Konstantin were the applicant, the gate must block self-approval; no
+alternate approver exists by default.
+
+The v0.1 policy subjects are exactly `agent-builder` (applicant) and `konstantin`
+(approver). They are not credentials: an external trusted host must attest the supplied
+approver identity before the pure gate receives it.
 6. **Create the binding.** An approved version receives immutable runtime-binding
    evidence and lifecycle history. This is a content-bound description, not a started
    process, registry write, credential grant, tool invocation, or deployment.

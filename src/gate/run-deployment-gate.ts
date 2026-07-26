@@ -1,5 +1,9 @@
 import type { AgentSpecContent } from "../schema/agent-spec-content.js";
-import type { ApprovalArtifact, ApprovalEvidence } from "../schema/approval-artifact.js";
+import {
+  AgentSpecApprovalSchema,
+  type ApprovalArtifact,
+  type ApprovalEvidence,
+} from "../schema/approval-artifact.js";
 import type {
   AgentSpecRuntimeMetadata,
   LifecycleState,
@@ -11,6 +15,10 @@ import type {
   DeploymentGateResult,
   TrustedDecisionContext,
 } from "./gate-types.js";
+import {
+  AGENT_CREATION_APPLICANT_ID,
+  AGENT_CREATION_APPROVER_ID,
+} from "../schema/agent-creation-approval-authority.js";
 
 /**
  * Only a spec under review may be gated. Policy and evaluation proofs are audit
@@ -28,7 +36,7 @@ function buildApproval(
   decision: "approved" | "rejected",
   evidence: ApprovalEvidence,
 ): ApprovalArtifact {
-  return {
+  return AgentSpecApprovalSchema.parse({
     type: "agent_spec",
     artifactId: ctx.artifactId,
     requestedBy: metadata.requestor,
@@ -43,7 +51,7 @@ function buildApproval(
     // `reason` is optional and `exactOptionalPropertyTypes` is on, so only
     // attach it when the approver actually supplied one.
     ...(ctx.reason !== undefined ? { reason: ctx.reason } : {}),
-  };
+  });
 }
 
 function withTransition(
@@ -105,6 +113,23 @@ export function runDeploymentGate(
     return {
       outcome: "blocked",
       reason: { type: "self_approval_forbidden", principalId: ctx.principal.principalId },
+    };
+  }
+
+  // V0.1 deliberately has one Builder applicant and one human approver. Both
+  // values arrive through already-trusted inputs; this guard never attests or
+  // mints identity itself.
+  if (metadata.requestor !== AGENT_CREATION_APPLICANT_ID) {
+    return {
+      outcome: "blocked",
+      reason: { type: "applicant_not_builder", requestor: metadata.requestor },
+    };
+  }
+
+  if (ctx.principal.principalId !== AGENT_CREATION_APPROVER_ID) {
+    return {
+      outcome: "blocked",
+      reason: { type: "approver_not_authorized", principalId: ctx.principal.principalId },
     };
   }
 

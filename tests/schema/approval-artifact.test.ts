@@ -11,9 +11,9 @@ describe("ApprovalArtifactSchema", () => {
     const candidate = {
       type: "agent_spec",
       artifactId: "approval-001",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "approved",
-      decidedBy: "release-manager",
+      decidedBy: "konstantin",
       decidedAt: "2026-07-23T12:00:00Z",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -31,7 +31,7 @@ describe("ApprovalArtifactSchema", () => {
     const candidate = {
       type: "agent_spec",
       artifactId: "approval-001b",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "approved",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -44,7 +44,7 @@ describe("ApprovalArtifactSchema", () => {
     const candidate = {
       type: "agent_spec",
       artifactId: "approval-001c",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "rejected",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -58,7 +58,7 @@ describe("ApprovalArtifactSchema", () => {
     const candidate = {
       type: "agent_spec",
       artifactId: "approval-001d",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "approved",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -72,7 +72,7 @@ describe("ApprovalArtifactSchema", () => {
     const candidate = {
       type: "agent_spec",
       artifactId: "approval-001e",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "rejected",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -86,7 +86,7 @@ describe("ApprovalArtifactSchema", () => {
     const candidate = {
       type: "agent_spec",
       artifactId: "approval-001f",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "approved",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -104,7 +104,7 @@ describe("ApprovalArtifactSchema", () => {
     const candidate = {
       type: "agent_spec",
       artifactId: "approval-001g",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "pending",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -118,7 +118,7 @@ describe("ApprovalArtifactSchema", () => {
     const mismatched = {
       type: "agent_spec",
       artifactId: "approval-001h",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "approved",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -138,7 +138,7 @@ describe("ApprovalArtifactSchema", () => {
     const initialNoEval = {
       type: "agent_spec",
       artifactId: "approval-001i",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "approved",
       specId: "spec-crm-enricher",
       version: "1.0.0",
@@ -152,14 +152,38 @@ describe("ApprovalArtifactSchema", () => {
     const reducingNoEval = {
       type: "agent_spec",
       artifactId: "approval-001j",
-      requestedBy: "builder-agent",
+      requestedBy: "agent-builder",
       decision: "approved",
+      decidedBy: "konstantin",
+      decidedAt: "2026-07-23T12:00:00Z",
       specId: "spec-crm-enricher",
       version: "1.0.0",
       contentHash: "hash-v1",
       evidence: { policyOutcome: "approved_pending_gate", delta: "capability-reducing" },
     };
     expect(ApprovalArtifactSchema.safeParse(reducingNoEval).success).toBe(true);
+  });
+
+  it("requires the v0.1 Builder applicant and Konstantin approver for approved agent specs", () => {
+    const approved = {
+      type: "agent_spec",
+      artifactId: "approval-sole-approver-001",
+      requestedBy: "agent-builder",
+      decision: "approved",
+      decidedBy: "konstantin",
+      decidedAt: "2026-07-23T12:00:00Z",
+      specId: "spec-crm-enricher",
+      version: "1.0.0",
+      contentHash: "hash-v1",
+      evidence: { policyOutcome: "approved_pending_gate", delta: "capability-reducing" },
+    };
+    expect(ApprovalArtifactSchema.safeParse(approved).success).toBe(true);
+    for (const invalid of [
+      { ...approved, requestedBy: "other-builder" },
+      { ...approved, decidedBy: "other-approver" },
+      { ...approved, decidedAt: undefined },
+      { ...approved, decidedAt: "not-a-timestamp" },
+    ]) expect(ApprovalArtifactSchema.safeParse(invalid).success).toBe(false);
   });
 
   it("accepts a call_graph_edge approval artifact wrapping a resolved edge", () => {

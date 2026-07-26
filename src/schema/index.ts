@@ -15,3 +15,4 @@ export * from "./canonical-edge-authority.js";
 export * from "./agent-call-authorization-reservation.js";
 export * from "./tool-scope.js";
 export * from "./persisted-authorization-store.js";
+export * from "./agent-creation-approval-authority.js";

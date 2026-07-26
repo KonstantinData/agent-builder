@@ -15,18 +15,18 @@ const approvedMetadata = AgentSpecRuntimeMetadataSchema.parse({
   version: "1.0.0",
   state: "approved",
   stateHistory: [
-    { state: "draft", actor: "builder-agent", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
-    { state: "approved", actor: "release-manager", timestamp: "2026-07-23T12:00:00Z", reason: "approved" },
+    { state: "draft", actor: "agent-builder", timestamp: "2026-07-20T10:00:00Z", reason: "initial draft" },
+    { state: "approved", actor: "konstantin", timestamp: "2026-07-23T12:00:00Z", reason: "approved" },
   ],
-  requestor: "builder-agent",
+  requestor: "agent-builder",
 });
 
 const approvedArtifact = ApprovalArtifactSchema.parse({
   type: "agent_spec",
   artifactId: "approval-crm-enricher-001",
-  requestedBy: "builder-agent",
+  requestedBy: "agent-builder",
   decision: "approved",
-  decidedBy: "release-manager",
+  decidedBy: "konstantin",
   decidedAt: "2026-07-23T12:00:00Z",
   specId: "spec-crm-enricher",
   version: "1.0.0",

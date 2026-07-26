@@ -2,6 +2,10 @@ import { z } from "zod";
 import { SpecIdSchema, TrustDomainIdSchema, ToolIdSchema } from "./common.js";
 import { AgentCallPolicyEdgeSchema } from "./agent-call-policy-edge.js";
 import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
+import {
+  AgentCreationApplicantIdSchema,
+  AgentCreationApproverIdSchema,
+} from "./agent-creation-approval-authority.js";
 
 /**
  * Section 7: one approval mechanism, multiple artifact types. Every variant
@@ -112,6 +116,7 @@ export const AgentSpecApprovalSchema = z
   .object({
     type: z.literal("agent_spec"),
     ...ApprovalDecisionFields,
+    requestedBy: AgentCreationApplicantIdSchema,
     decision: z.enum(["approved", "rejected"]),
     specId: SpecIdSchema,
     version: z.string().min(1),
@@ -129,6 +134,22 @@ export const AgentSpecApprovalSchema = z
         path: ["evidence", "policyOutcome"],
         message: `evidence.policyOutcome '${artifact.evidence.policyOutcome}' does not match decision '${artifact.decision}'`,
       });
+    }
+    if (artifact.decision === "approved") {
+      if (artifact.decidedBy !== "konstantin") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["decidedBy"],
+          message: "approved agent specs require the sole v0.1 approver",
+        });
+      }
+      if (Rfc3339WithOffsetSchema.safeParse(artifact.decidedAt).success === false) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["decidedAt"],
+          message: "approved agent specs require a valid decision timestamp",
+        });
+      }
     }
   });
 
