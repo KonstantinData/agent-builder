@@ -1,7 +1,9 @@
 # Production Target Topology, Tenancy, and Trust Ownership v0.1
 
-> Status: **Proposed.** This document requires an attended architecture and product
-> acceptance. It activates no host, credential, runtime, deployment, or execution path.
+> Status: **Deferred to the separate Deploy Tool.** This document describes possible
+> runtime trust boundaries only. It is not part of the Agent Builder Definition of Done
+> and activates no host, credential, runtime, deployment, or execution path. See
+> [Agent Builder Product and Delivery Boundary v1](agent-builder-product-and-delivery-boundary-v1.md).
 
 ## Decision
 

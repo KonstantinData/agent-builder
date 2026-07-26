@@ -1,6 +1,12 @@
 # agent-builder
 
-`agent-builder` is a TypeScript prototype for a control-plane-first builder agent.
+`agent-builder` is an internal TypeScript prototype for a control-plane-first Builder.
+It creates validated, versioned ZIP packages for production-ready agents; customers do
+not use it directly. Deployment, server access, customer configuration, updates, and
+rollback are owned by a separate Deploy Tool. See
+[`Agent Builder Product and Delivery Boundary v1`](docs/architecture/agent-builder-product-and-delivery-boundary-v1.md).
+The mandatory package order and completion evidence are in
+[`Agent Builder Delivery Plan v1`](docs/architecture/agent-builder-delivery-plan-v1.md).
 
 The attended-local, bounded continuation protocol is documented in
 [`docs/architecture/autonomous-roadmap-orchestration-v0.1.md`](docs/architecture/autonomous-roadmap-orchestration-v0.1.md).
@@ -31,9 +37,9 @@ Further Claude collaboration is retired. The
 [`Human Attended Contract Lock v0.1`](docs/architecture/human-attended-contract-lock-v0.1.md)
 accepts only a host-verified, expiring, digest-bound human approval for an exact
 candidate contract; it has no model or network fallback.
-Its job is not to execute agents directly. It turns builder intent into validated,
-versioned agent specifications, evaluates them against policy, and produces auditable
-approval decisions without deploying or executing the resulting agents.
+Its job is not to execute agents directly. It turns a guided, contextual briefing into
+validated, versioned agent specifications and a production-ready ZIP package without
+deploying or executing the resulting agent.
 
 Creating an agent therefore creates a versioned, evaluated and human-approved agent
 description; it does not start a process. The Builder prepares the proposal, and
