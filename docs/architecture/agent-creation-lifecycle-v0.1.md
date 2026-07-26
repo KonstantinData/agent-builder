@@ -2,13 +2,18 @@
 
 ## Product definition
 
-The Agent Builder actively prepares new, versioned agent specifications in consultation
-with an authorized requester. It does not determine whether a digital employee is
-needed, start a running agent, execute external effects, or supervise an agent's later
-work. Workforce supervision is a separate concern outside this contract.
+The Agent Builder is an internal Konstantin-only tool. It actively prepares new,
+versioned agent specifications through a guided, contextual briefing. It does not use a
+fixed questionnaire: it identifies missing information, asks agent-specific questions,
+summarizes the plan, and builds only after the briefing is complete.
 
-Creating an agent means safely specifying, testing, approving, and binding a versioned
-description. It never means silently switching on a process.
+The Builder produces a validated, versioned ZIP package and does not start a running
+agent, deploy to customer servers, execute external effects, or supervise later agent
+work. Customer configuration and credentials remain in separately hosted customer
+environments. See [Agent Builder Product and Delivery Boundary v1](agent-builder-product-and-delivery-boundary-v1.md).
+
+Creating an agent means safely specifying, testing, approving, packaging, and
+versioning a production-ready agent. It never means silently switching on a process.
 
 ## Lifecycle
 
@@ -79,6 +84,9 @@ external effect.
 - No staffing-need inference or personnel-work supervision.
 - No direct deployment, process start, execution, dispatch, tool call, e-mail, Slack,
   WhatsApp, calendar, Notion, or other external effect by the Builder.
+- No finished customer agent, customer data, customer configuration, or credential in
+  this repository or in a Builder ZIP package.
+- No automatic propagation of template changes to deployed customer agents.
 - No executable spec, wildcard permission, unresolved role, shared credential,
   unapproved agent-call edge, self-approval, or automatic approval.
 - No additional approver without an explicit versioned extension to this contract.

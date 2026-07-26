@@ -4,11 +4,12 @@ Status: Draft v0.1 — derived from a structured multi-party design discussion (
 
 ## 1. Problem Statement
 
-The `agent-builder` project is a Builder Agent whose job is to design, configure, and
-provision other agents. The agents it produces must be reachable 24/7 and able to reach
-each other 24/7 — this is not a single-agent tool-use problem, it is a system that can
-recursively grant capabilities and create a mesh of long-running, mutually addressable
-agents.
+The `agent-builder` project is an internal Builder whose job is to design, configure,
+validate, and package other agents. It does not provision or operate their runtime. A
+separate Deploy Tool places a completed package into a customer environment; any
+long-running agent communication is therefore a runtime concern, not an authority or
+hosting capability of this repository. See
+[Agent Builder Product and Delivery Boundary v1](agent-builder-product-and-delivery-boundary-v1.md).
 
 Left unconstrained, a system like this is not an agent builder — it is a recursive
 privilege-escalation machine. This document exists to prevent that outcome while still
