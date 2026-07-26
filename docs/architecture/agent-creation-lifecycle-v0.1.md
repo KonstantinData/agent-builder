@@ -23,6 +23,10 @@ description. It never means silently switching on a process.
    the full evaluation and gate path; reducing changes may use the defined lighter path.
 4. **Evaluate safely.** The Evaluation Harness uses disposable mocks only, never live
    production data or credentials. Every declared evaluation requirement must pass.
+   Each retained result carries a unique evidence ID, exact `{specId, version,
+   contentHash}` subject, suite/score, completion time and explicit no-production
+   assertions. A result for another candidate, an unknown/malformed reference clock,
+   or a future-dated result is rejected; it is never reusable evidence.
 5. **Obtain human approval.** The Deployment Gate binds content, policy subject and
    runtime metadata to the same candidate. Konstantin is the sole verified human
 approver in v0.1. The Builder is always the applicant and can never approve its own
@@ -35,6 +39,11 @@ approver identity before the pure gate receives it.
 6. **Create the binding.** An approved version receives immutable runtime-binding
    evidence and lifecycle history. This is a content-bound description, not a started
    process, registry write, credential grant, tool invocation, or deployment.
+
+At the Deployment Gate and Runtime Binding boundaries, the canonical content hash is
+recomputed from the full spec. Any mismatch blocks before an approval or binding can be
+emitted. This detects post-evaluation or post-approval content substitution; it does
+not turn the Builder into a signer, evaluator runner, runtime, or host authority.
 
 ## Per-agent capability decision
 

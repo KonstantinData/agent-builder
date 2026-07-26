@@ -6,6 +6,7 @@ import {
   AgentCreationApplicantIdSchema,
   AgentCreationApproverIdSchema,
 } from "./agent-creation-approval-authority.js";
+import { EvaluationOutcomeSchema } from "./evaluation-outcome.js";
 
 /**
  * Section 7: one approval mechanism, multiple artifact types. Every variant
@@ -36,6 +37,9 @@ export const POLICY_REJECTION_REASON_CODES = [
   "forbidden_tool_combination",
   "parent_version_not_found",
   "evaluation_outcome_invalid",
+  "evaluation_subject_mismatch",
+  "evaluation_completed_in_future",
+  "evaluation_reference_time_invalid",
   "evaluation_suite_mismatch",
   "evaluation_below_threshold",
 ] as const;
@@ -56,9 +60,7 @@ export const APPROVAL_EVIDENCE_DELTAS = [
 ] as const;
 export type ApprovalEvidenceDelta = (typeof APPROVAL_EVIDENCE_DELTAS)[number];
 
-const EvaluationRefSchema = z
-  .object({ suiteRef: z.string().min(1), score: z.number().min(0).max(1) })
-  .strict();
+const EvaluationRefSchema = EvaluationOutcomeSchema;
 
 /**
  * Decision *evidence* for an approval — what the gate decided against, not what

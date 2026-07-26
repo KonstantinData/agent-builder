@@ -15,6 +15,7 @@ import {
   RuntimeBindingArtifactSchema,
   TrustedRuntimeBindingContextSchema,
 } from "../schema/runtime-binding.js";
+import { contentHashMatches } from "../assembler/content-hash.js";
 
 const DEPLOYABLE_STATE = "approved";
 
@@ -86,6 +87,17 @@ export function createRuntimeBinding(
     return { outcome: "blocked", reason: { type: "input_invalid", reason: "schema_validation_failed" } };
   }
   const validatedInput = parsedInput.data;
+
+  if (!contentHashMatches(validatedInput.spec)) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "runtime_binding_content_hash_mismatch",
+        specId: validatedInput.spec.specId,
+        version: validatedInput.spec.version,
+      },
+    };
+  }
 
   const parsedContext = TrustedRuntimeBindingContextSchema.safeParse(ctx);
   if (!parsedContext.success) {

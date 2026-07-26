@@ -22,6 +22,8 @@ export interface PolicyContext {
   readonly approvedSpecs: readonly AgentSpecContent[];
   readonly trustDomains: readonly TrustDomain[];
   readonly forbiddenToolCombinations: readonly (readonly ToolId[])[];
+  /** Control-plane supplied reference time used only to reject future-dated evidence. */
+  readonly evaluationReferenceTime: string;
 }
 
 export type PolicyRejectionReason =
@@ -31,6 +33,9 @@ export type PolicyRejectionReason =
   | { readonly type: "forbidden_tool_combination"; readonly toolIds: readonly ToolId[] }
   | { readonly type: "parent_version_not_found"; readonly specId: SpecId; readonly parentVersion: string }
   | { readonly type: "evaluation_outcome_invalid"; readonly suiteRef: string; readonly score: number }
+  | { readonly type: "evaluation_subject_mismatch"; readonly expected: PolicySubject; readonly actual: PolicySubject }
+  | { readonly type: "evaluation_completed_in_future"; readonly completedAt: string; readonly referenceTime: string }
+  | { readonly type: "evaluation_reference_time_invalid"; readonly referenceTime: string }
   | { readonly type: "evaluation_suite_mismatch"; readonly expected: string; readonly actual: string }
   | { readonly type: "evaluation_below_threshold"; readonly score: number; readonly passThreshold: number };
 

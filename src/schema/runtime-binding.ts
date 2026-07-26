@@ -67,6 +67,7 @@ export const RUNTIME_BINDING_BLOCK_REASONS = [
   "runtime_binding_approval_subject_mismatch",
   "runtime_binding_already_exists",
   "runtime_binding_context_invalid",
+  "runtime_binding_content_hash_mismatch",
 ] as const;
 export const RuntimeBindingBlockReasonCodeSchema = z.enum(RUNTIME_BINDING_BLOCK_REASONS);
 export type RuntimeBindingBlockReasonCode = z.infer<typeof RuntimeBindingBlockReasonCodeSchema>;
@@ -78,7 +79,8 @@ export type RuntimeBindingBlockReason =
   | { readonly type: "runtime_binding_approval_invalid"; readonly reason: string }
   | { readonly type: "runtime_binding_approval_subject_mismatch"; readonly specId: string; readonly version: string }
   | { readonly type: "runtime_binding_already_exists"; readonly bindingId: string }
-  | { readonly type: "runtime_binding_context_invalid"; readonly reason: string };
+  | { readonly type: "runtime_binding_context_invalid"; readonly reason: string }
+  | { readonly type: "runtime_binding_content_hash_mismatch"; readonly specId: string; readonly version: string };
 
 /**
  * Compile-time guard that keeps the closed block-reason catalog and structured

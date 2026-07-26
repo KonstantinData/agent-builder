@@ -19,6 +19,8 @@ import {
   AGENT_CREATION_APPLICANT_ID,
   AGENT_CREATION_APPROVER_ID,
 } from "../schema/agent-creation-approval-authority.js";
+import { contentHashMatches } from "../assembler/content-hash.js";
+import { EvaluationOutcomeSchema } from "../schema/evaluation-outcome.js";
 
 /**
  * Only a spec under review may be gated. Policy and evaluation proofs are audit
@@ -91,6 +93,34 @@ export function runDeploymentGate(
     return { outcome: "blocked", reason: { type: "state_not_gateable", state: metadata.state } };
   }
 
+  if (!contentHashMatches(candidate)) {
+    return {
+      outcome: "blocked",
+      reason: { type: "content_hash_mismatch", specId: candidate.specId, version: candidate.version },
+    };
+  }
+
+  const heldEvaluation = "evaluation" in policyResult ? policyResult.evaluation : undefined;
+  if (heldEvaluation !== undefined && !EvaluationOutcomeSchema.safeParse(heldEvaluation).success) {
+    return { outcome: "blocked", reason: { type: "evaluation_evidence_invalid" } };
+  }
+
+  if (
+    heldEvaluation !== undefined &&
+    (heldEvaluation.subject.specId !== candidate.specId ||
+      heldEvaluation.subject.version !== candidate.version ||
+      heldEvaluation.subject.contentHash !== candidate.contentHash)
+  ) {
+    return {
+      outcome: "blocked",
+      reason: {
+        type: "evaluation_evidence_subject_mismatch",
+        specId: candidate.specId,
+        version: candidate.version,
+      },
+    };
+  }
+
   // Guard 2 — three-way subject verification: candidate <-> policyResult.subject
   // <-> metadata. A verdict must never be applied to different content than it
   // was produced for.
@@ -146,10 +176,7 @@ export function runDeploymentGate(
         // failed eval keeps its suite/score in the durable audit artifact.
         ...(policyResult.evaluation !== undefined
           ? {
-              evaluationRef: {
-                suiteRef: policyResult.evaluation.suiteRef,
-                score: policyResult.evaluation.score,
-              },
+              evaluationRef: policyResult.evaluation,
             }
           : {}),
       };
@@ -180,10 +207,7 @@ export function runDeploymentGate(
         delta: policyResult.delta,
         ...(policyResult.evaluation !== undefined
           ? {
-              evaluationRef: {
-                suiteRef: policyResult.evaluation.suiteRef,
-                score: policyResult.evaluation.score,
-              },
+              evaluationRef: policyResult.evaluation,
             }
           : {}),
       };

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { checkEvaluationOutcome } from "../../src/harness/evaluation-check.js";
 import {
   belowThresholdEvalOutcome,
+  evaluationFor,
   passingEvalOutcome,
   validAgentSpecContent,
   wrongSuiteEvalOutcome,
@@ -25,7 +26,7 @@ describe("checkEvaluationOutcome", () => {
   });
 
   it("accepts a score exactly equal to the threshold", () => {
-    const outcome = { suiteRef: "suite-crm-v1", score: 0.9 };
+    const outcome = evaluationFor(validAgentSpecContent, { score: 0.9 });
     expect(checkEvaluationOutcome(validAgentSpecContent, outcome)).toEqual([]);
   });
 });

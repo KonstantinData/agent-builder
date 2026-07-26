@@ -19,6 +19,7 @@ import {
 } from "../../src/schema/common.js";
 import { TrustDomainSchema, type TrustDomain } from "../../src/schema/trust-domain.js";
 import type { EvaluationOutcome } from "../../src/harness/harness-types.js";
+import { computeContentHash } from "../../src/assembler/content-hash.js";
 
 // --- AgentSpecContent: a valid parent spec plus reduced/expanding children ---
 
@@ -49,8 +50,13 @@ export const validAgentSpecContentRaw = {
   declaredRoles: ["crm-enrichment", "crm-lead-scoring"],
 };
 
-export const validAgentSpecContent: AgentSpecContent =
-  AgentSpecContentSchema.parse(validAgentSpecContentRaw);
+const parsedValidAgentSpecWithPlaceholder = AgentSpecContentSchema.parse(validAgentSpecContentRaw);
+const { contentHash: _placeholderHash, ...validAgentSpecHashableContent } =
+  parsedValidAgentSpecWithPlaceholder;
+export const validAgentSpecContent: AgentSpecContent = AgentSpecContentSchema.parse({
+  ...validAgentSpecHashableContent,
+  contentHash: computeContentHash(validAgentSpecHashableContent),
+});
 
 export const reducedChildSpecContent: AgentSpecContent = AgentSpecContentSchema.parse({
   ...validAgentSpecContentRaw,
@@ -324,6 +330,23 @@ export const forbiddenCombinations: readonly (readonly ToolId[])[] = [exfiltrati
 
 // Consistent with validAgentSpecContentRaw.evalRequirements = { suiteRef:
 // "suite-crm-v1", passThreshold: 0.9 }.
-export const passingEvalOutcome: EvaluationOutcome = { suiteRef: "suite-crm-v1", score: 0.95 };
-export const wrongSuiteEvalOutcome: EvaluationOutcome = { suiteRef: "suite-other", score: 0.95 };
-export const belowThresholdEvalOutcome: EvaluationOutcome = { suiteRef: "suite-crm-v1", score: 0.5 };
+export function evaluationFor(
+  spec: AgentSpecContent,
+  overrides: Partial<EvaluationOutcome> = {},
+): EvaluationOutcome {
+  return {
+    evidenceId: `evidence-${spec.specId}-${spec.version}`,
+    subject: { specId: spec.specId, version: spec.version, contentHash: spec.contentHash },
+    suiteRef: spec.evalRequirements.suiteRef,
+    score: 0.95,
+    completedAt: "2026-07-23T11:00:00Z",
+    environment: "disposable_mock",
+    usedProductionData: false,
+    usedProductionCredentials: false,
+    ...overrides,
+  };
+}
+
+export const passingEvalOutcome = evaluationFor(validAgentSpecContent);
+export const wrongSuiteEvalOutcome = evaluationFor(validAgentSpecContent, { suiteRef: "suite-other" });
+export const belowThresholdEvalOutcome = evaluationFor(validAgentSpecContent, { score: 0.5 });
