@@ -59,6 +59,21 @@ history and runtime-binding artifact are versioned repository/Control-Plane evid
 The corresponding agent documentation is maintained in Notion. Notion documents the
 human-facing record; it is not a substitute for the versioned technical evidence.
 
+`agent-spec-traceability/1` is the optional immutable sidecar that makes one completed
+candidate chain auditable without introducing a second authority source. It contains
+exactly one immutable spec, evaluation evidence, approved `agent_spec` artifact,
+runtime-binding artifact, explicit `recordedAt` instant, deterministic record digest,
+and an opaque Notion documentation reference. The subject `{specId, version,
+contentHash}` must be identical in all four technical artifacts; the runtime binding
+must name that exact approval artifact. Evidence must be chronological:
+evaluation completion <= approval decision <= binding deployment <= record time.
+Foreign, missing, ambiguous, altered or future-dated evidence blocks the record.
+
+The Notion reference is documentation only. The Builder never fetches, validates,
+signs, or derives authority from it. Creating a traceability record does not approve a
+candidate, mutate lifecycle state, bind a runtime, start a process, or invoke an
+external effect.
+
 ## Explicit exclusions
 
 - No staffing-need inference or personnel-work supervision.
