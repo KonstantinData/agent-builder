@@ -4,10 +4,12 @@ Status: **Accepted** on 2026-07-27.
 
 ## Purpose
 
-Before an Agent Builder draft can be assembled, the Builder conducts a guided,
-contextual dialogue from a rough request. It identifies what is missing, asks
-only the questions relevant to that agent, records sanitised requirement
-summaries, and presents a plan summary. It does not use a fixed questionnaire.
+Before an Agent Builder draft can be assembled, the Builder starts a guided,
+contextual dialogue from a rough request. An injected question provider receives
+that exact request and the missing topics, then issues the agent-specific
+questions. The Builder accepts one sanitised answer only for a question it
+issued, and creates the plan only after the issued questions are answered. It
+does not use a fixed questionnaire.
 
 ## Completeness framework
 
@@ -36,6 +38,22 @@ it merely permits the next Builder stage to create a draft.
 The retained answer field is a sanitised requirement summary. Customer records,
 customer configuration, credentials, and server access data are not valid
 Builder repository material and must not be retained there.
+
+## Executable flow
+
+`startGuidedBriefing` accepts only a rough request and a deterministic,
+injectable question provider. Each issued question carries a concrete
+`contextNeed` that must share a meaningful request term. The flow carries a
+recomputed digest over the request, issued questions, answers, and contextual
+needs, so answer or completion operations reject modified state. A
+host-injected `FlowSigner` signs every flow state and the Build-start gate
+verifies that signature; a self-consistent, caller-constructed JSON object is
+not accepted.
+`answerGuidedBriefing` rejects foreign, mismatched, or duplicate answers.
+`completeGuidedBriefing` runs the normal completeness gate, then accepts only a
+non-empty plan whose provider returns the exact completion-flow digest. This
+remains a Builder-only planning flow; immutable provenance binding to
+adaptation, draft, and Spec is the next dependent work package.
 
 ## Evidence
 

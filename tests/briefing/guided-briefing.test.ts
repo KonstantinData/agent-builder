@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateGuidedBriefingReadiness } from "../../src/briefing/guided-briefing.js";
+import { answerGuidedBriefing, completeGuidedBriefing, evaluateCompletedGuidedBriefingFlowReadiness, evaluateGuidedBriefingReadiness, startGuidedBriefing } from "../../src/briefing/guided-briefing.js";
 import { GuidedBriefingSchema, type GuidedBriefing } from "../../src/schema/guided-briefing.js";
 
 const questions = [
@@ -10,6 +10,7 @@ const questions = [
   ["output_and_tone", "How should its result read?"],
   ["tests_and_acceptance", "What proves acceptance?"],
 ] as const;
+const signer = { sign: (digest: string) => `trusted:${digest}`, verify: (digest: string, signature: string) => signature === `trusted:${digest}` };
 
 function completedBriefing(): GuidedBriefing {
   return {
@@ -33,6 +34,31 @@ function completedBriefing(): GuidedBriefing {
 }
 
 describe("guided contextual briefing", () => {
+  it("executes rough request to contextual questions, answers, and a completed plan", () => {
+    const roughRequest = "Build a lead-intake agent.";
+    let flow = startGuidedBriefing({ briefingId: "flow-1", roughRequest, signer, questionProvider: { questionsFor: ({ missingTopics }) => missingTopics.map((topic, index) => ({ question: { questionId: `flow-${index}`, topic, prompt: `What is needed for ${topic}?`, rationale: `Required for ${roughRequest}` }, contextNeed: "lead-intake outcome" })) } });
+    for (const question of flow.briefing.questions) flow = answerGuidedBriefing(flow, { questionId: question.questionId, topic: question.topic, sanitizedSummary: "Generic requirement.", sourceClassification: "generic_requirement" }, signer);
+    const complete = completeGuidedBriefing(flow, { planFor: ({ briefing, flowDigest }) => ({ planSummary: `Plan for ${briefing.roughRequest}`, flowDigest }) }, signer);
+    expect(complete.briefing.status).toBe("completed"); expect(complete.briefing.planSummary).toBe(`Plan for ${roughRequest}`); expect(evaluateCompletedGuidedBriefingFlowReadiness(complete, signer)).toMatchObject({ ready: true });
+    expect(evaluateCompletedGuidedBriefingFlowReadiness({ ...complete, contextNeeds: {} }, signer)).toMatchObject({ ready: false });
+    expect(evaluateCompletedGuidedBriefingFlowReadiness({ ...complete, signature: "forged" }, signer)).toMatchObject({ ready: false });
+  });
+
+  it("rejects unrelated questions, foreign answers, and completion before all answers", () => {
+    const roughRequest = "Build a lead-intake agent.";
+    expect(() => startGuidedBriefing({ briefingId: "bad", roughRequest, signer, questionProvider: { questionsFor: () => [{ question: { questionId: "q", topic: "workflow_and_outcome", prompt: "What?", rationale: "Generic." }, contextNeed: "generic need" }] } })).toThrow("non-contextual");
+    const flow = startGuidedBriefing({ briefingId: "flow-2", roughRequest, signer, questionProvider: { questionsFor: ({ missingTopics }) => missingTopics.map((topic, index) => ({ question: { questionId: `q-${index}`, topic, prompt: "Question", rationale: roughRequest }, contextNeed: "lead-intake need" })) } });
+    expect(() => answerGuidedBriefing(flow, { questionId: "foreign", topic: "workflow_and_outcome", sanitizedSummary: "No.", sourceClassification: "generic_requirement" }, signer)).toThrow("not eligible");
+    expect(() => completeGuidedBriefing(flow, { planFor: ({ flowDigest }) => ({ planSummary: "Plan", flowDigest }) }, signer)).toThrow("not ready");
+    expect(() => completeGuidedBriefing({ ...flow, briefing: { ...flow.briefing, roughRequest: "Replaced request." } }, { planFor: ({ flowDigest }) => ({ planSummary: "Plan", flowDigest }) }, signer)).toThrow("state was modified");
+  });
+
+  it("rejects a fabricated completed briefing and a plan with a foreign flow digest", () => {
+    expect(evaluateCompletedGuidedBriefingFlowReadiness(completedBriefing(), signer)).toMatchObject({ ready: false });
+    const roughRequest = "Build a lead-intake agent."; let flow = startGuidedBriefing({ briefingId: "flow-3", roughRequest, signer, questionProvider: { questionsFor: ({ missingTopics }) => missingTopics.map((topic, index) => ({ question: { questionId: `q-${index}`, topic, prompt: "Question", rationale: roughRequest }, contextNeed: "lead-intake need" })) } });
+    for (const question of flow.briefing.questions) flow = answerGuidedBriefing(flow, { questionId: question.questionId, topic: question.topic, sanitizedSummary: "Generic requirement.", sourceClassification: "generic_requirement" }, signer);
+    expect(() => completeGuidedBriefing(flow, { planFor: () => ({ planSummary: "Foreign plan", flowDigest: "0".repeat(64) }) }, signer)).toThrow("not bound");
+  });
   it("accepts a completed briefing with flexible, topic-specific questions", () => {
     const candidate = completedBriefing();
     expect(GuidedBriefingSchema.safeParse(candidate).success).toBe(true);
