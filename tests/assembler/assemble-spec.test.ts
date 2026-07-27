@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assembleSpec } from "../../src/assembler/assemble-spec.js";
+import { computeBuilderIntentDraftContentHash } from "../../src/template/template-governance.js";
 import { AgentSpecContentSchema, type AgentSpecContent } from "../../src/schema/agent-spec-content.js";
 import type { AssemblyContext } from "../../src/assembler/assembly-types.js";
 import {
@@ -173,6 +174,13 @@ describe("assembleSpec", () => {
     if (first.success && second.success) {
       expect(first.content.contentHash).toBe(second.content.contentHash);
     }
+  });
+
+  it("recomputes draft provenance instead of copying a claimed draft hash", () => {
+    const draft = { ...validBuilderIntentDraftRaw, requestedAgentCalls: [], provenance: { ...validBuilderIntentDraftRaw.provenance, adaptationContentHash: "c".repeat(64) } };
+    const result = assembleSpec(draft, contextWithDomainOnly);
+    expect(result).toMatchObject({ success: true });
+    if (result.success) expect(result.content.provenance.draftContentHash).toBe(computeBuilderIntentDraftContentHash(draft));
   });
 
   it("fails fast with a single schema_validation_failed reason when the draft itself does not parse", () => {

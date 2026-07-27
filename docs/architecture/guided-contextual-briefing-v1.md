@@ -61,3 +61,11 @@ The contract and negative cases are tested in
 `tests/briefing/guided-briefing.test.ts`. Package-specific package assembly,
 production-readiness checks, ZIP generation, and deployment are deliberately
 outside this contract.
+# Immutable downstream provenance
+
+A completed signed briefing is bound to every downstream adaptation through
+its `briefingId`, final `flowDigest`, and `planInputDigest`. The adaptation
+records a canonical draft digest and adaptation digest; the assembled Spec
+retains those values inside its content-hashed provenance. A substituted
+briefing, adaptation, draft, or Spec provenance therefore fails closed at the
+Builder delivery gate.

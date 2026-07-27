@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   computeTemplateContentHash,
+  computeBuilderIntentDraftContentHash,
+  computeTemplateAdaptationContentHash,
   promoteApprovedTemplateFeedback,
   validateTemplateAdaptation,
 } from "../../src/template/template-governance.js";
 import { AgentTemplateSchema } from "../../src/schema/agent-template.js";
+import { SpecIdSchema } from "../../src/schema/common.js";
 
 function template(version = "1.0.0") {
   const base = {
@@ -28,32 +31,26 @@ function template(version = "1.0.0") {
   return { ...hashable, contentHash: computeTemplateContentHash(hashable) };
 }
 
+function adaptationFor(source: ReturnType<typeof template>) {
+  const briefing = { briefingId: "briefing-template-001", flowDigest: "a".repeat(64), planInputDigest: "b".repeat(64) };
+  const adaptationId = "adaptation-001";
+  const draft = { ...source.intent, draftId: "draft-001", specId: SpecIdSchema.parse("spec-lead-intake-001"), provenance: { ...briefing, adaptationId, adaptationContentHash: "0".repeat(64), draftId: "draft-001" } };
+  const draftContentHash = computeBuilderIntentDraftContentHash(draft);
+  const hashable = { adaptationId, template: { templateId: source.templateId, templateVersion: source.templateVersion }, templateContentHash: source.contentHash, briefing, adaptedDraft: draft, draftContentHash, sanitizedAdaptationSummary: "Adapt the generic intake flow without retaining customer data." };
+  const adaptationContentHash = computeTemplateAdaptationContentHash(hashable);
+  return { ...hashable, adaptedDraft: { ...draft, provenance: { ...draft.provenance, adaptationContentHash } }, adaptationContentHash };
+}
+
 describe("template governance", () => {
   it("binds a one-off adaptation to one exact immutable template version", () => {
     const source = template();
-    const adaptation = {
-      adaptationId: "adaptation-001",
-      template: { templateId: source.templateId, templateVersion: source.templateVersion },
-      templateContentHash: source.contentHash,
-      adaptedDraft: {
-        ...source.intent,
-        draftId: "draft-001",
-        specId: "spec-lead-intake-001",
-      },
-      sanitizedAdaptationSummary: "Adapt the generic intake flow without retaining customer data.",
-    };
+    const adaptation = adaptationFor(source);
     expect(validateTemplateAdaptation(source, adaptation)).toMatchObject({ success: true });
   });
 
   it("rejects an adaptation that changes the selected template identity or content", () => {
     const source = template();
-    const adaptation = {
-      adaptationId: "adaptation-001",
-      template: { templateId: source.templateId, templateVersion: "2.0.0" },
-      templateContentHash: source.contentHash,
-      adaptedDraft: { ...source.intent, draftId: "draft-001", specId: "spec-lead-intake-001" },
-      sanitizedAdaptationSummary: "A summary.",
-    };
+    const adaptation = { ...adaptationFor(source), template: { templateId: source.templateId, templateVersion: "2.0.0" } };
     expect(validateTemplateAdaptation(source, adaptation)).toMatchObject({
       success: false,
       reason: "template_reference_mismatch",
@@ -62,6 +59,21 @@ describe("template governance", () => {
       success: false,
       reason: "template_content_hash_mismatch",
     });
+  });
+
+  it.each([
+    ["draft_content_hash_mismatch", (value: ReturnType<typeof adaptationFor>) => ({ ...value, draftContentHash: "f".repeat(64) })],
+    ["adaptation_content_hash_mismatch", (value: ReturnType<typeof adaptationFor>) => ({ ...value, adaptationContentHash: "e".repeat(64) })],
+  ])("fails closed for %s", (expectedReason, mutate) => {
+    const source = template();
+    expect(validateTemplateAdaptation(source, mutate(adaptationFor(source)))).toMatchObject({ success: false, reason: expectedReason });
+  });
+
+  it("fails closed when adaptation briefing and draft briefing provenance differ", () => {
+    const source = template(); const value = adaptationFor(source);
+    const hashable = { ...value, briefing: { ...value.briefing, flowDigest: "d".repeat(64) } }; const { adaptationContentHash: _previousHash, ...withoutHash } = hashable;
+    const candidate = { ...hashable, adaptationContentHash: computeTemplateAdaptationContentHash(withoutHash) };
+    expect(validateTemplateAdaptation(source, candidate)).toMatchObject({ success: false, reason: "briefing_provenance_mismatch" });
   });
 
   it("promotes a feedback proposal only with an explicit approval and a new template version", () => {

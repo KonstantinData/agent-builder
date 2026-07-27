@@ -8,6 +8,7 @@ import type { AssemblyContext, AssemblyResult, RejectionReason, SchemaIssue } fr
 import { resolveCalleeRole } from "./role-resolution.js";
 import { assignVersion } from "./version-assignment.js";
 import { computeContentHash } from "./content-hash.js";
+import { computeBuilderIntentDraftContentHash } from "../template/template-governance.js";
 
 function toSchemaIssues(
   issues: ReadonlyArray<{ readonly path: readonly PropertyKey[]; readonly message: string }>,
@@ -83,6 +84,10 @@ export function assembleSpec(draftCandidate: unknown, context: AssemblyContext):
     memoryScope: draft.memoryScope,
     trustDomainId: draft.trustDomainId,
     declaredRoles: draft.declaredRoles,
+    provenance: {
+      ...draft.provenance,
+      draftContentHash: computeBuilderIntentDraftContentHash(draft),
+    },
   };
 
   const contentHash = computeContentHash(contentWithoutHash);

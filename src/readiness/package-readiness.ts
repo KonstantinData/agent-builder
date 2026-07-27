@@ -17,6 +17,7 @@ export type DeliveryReadinessReason =
   | "security_evidence_missing"
   | "security_evidence_failed"
   | "briefing_adaptation_unbound"
+  | "provenance_chain_invalid"
   | "template_adaptation_invalid"
   | "approval_evaluation_invalid"
   | "spec_content_hash_invalid"
@@ -61,6 +62,22 @@ export function evaluateDeliveryReadiness(input: DeliveryReadinessInput): Delive
   const approval = AgentSpecApprovalSchema.safeParse(input.approval);
   const evaluation = EvaluationOutcomeSchema.safeParse(input.evaluation);
   if (spec.success && !contentHashMatches(spec.data)) reasons.push("spec_content_hash_invalid");
+  if (briefing.ready && adaptation.success && spec.success) {
+    const draft = adaptation.value.adaptedDraft;
+    const provenance = spec.data.provenance;
+    if (
+      adaptation.value.briefing.briefingId !== briefing.briefing.briefingId ||
+      adaptation.value.briefing.flowDigest !== (input.briefing as { flowDigest?: unknown }).flowDigest ||
+      adaptation.value.briefing.planInputDigest !== (input.briefing as { planInputDigest?: unknown }).planInputDigest ||
+      provenance.briefingId !== draft.provenance.briefingId ||
+      provenance.flowDigest !== draft.provenance.flowDigest ||
+      provenance.planInputDigest !== draft.provenance.planInputDigest ||
+      provenance.adaptationId !== draft.provenance.adaptationId ||
+      provenance.adaptationContentHash !== draft.provenance.adaptationContentHash ||
+      provenance.draftId !== draft.provenance.draftId ||
+      provenance.draftContentHash !== adaptation.value.draftContentHash
+    ) reasons.push("provenance_chain_invalid");
+  } else if (!briefing.ready || !adaptation.success || !spec.success) reasons.push("provenance_chain_invalid");
   if (!spec.success || !approval.success || !evaluation.success || approval.success && evaluation.success && spec.success && (
     approval.data.decision !== "approved" || approval.data.specId !== spec.data.specId || approval.data.version !== spec.data.version || approval.data.contentHash !== spec.data.contentHash ||
     evaluation.data.subject.specId !== spec.data.specId || evaluation.data.subject.version !== spec.data.version || evaluation.data.subject.contentHash !== spec.data.contentHash ||

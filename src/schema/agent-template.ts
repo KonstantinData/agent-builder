@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BuilderIntentDraftSchema } from "./builder-intent-draft.js";
+import { BriefingProvenanceSchema } from "./briefing-provenance.js";
 import { Rfc3339WithOffsetSchema } from "./runtime-binding-validity.js";
 
 const TemplateReferenceSchema = z
@@ -18,7 +19,7 @@ export const AgentTemplateSchema = z
   .object({
     ...TemplateReferenceSchema.shape,
     contentHash: z.string().regex(/^[a-f0-9]{64}$/),
-    intent: BuilderIntentDraftSchema.omit({ draftId: true, specId: true }),
+    intent: BuilderIntentDraftSchema.omit({ draftId: true, specId: true, provenance: true }),
   })
   .strict();
 export type AgentTemplate = z.infer<typeof AgentTemplateSchema>;
@@ -29,7 +30,10 @@ export const TemplateAdaptationSchema = z
     adaptationId: z.string().min(1),
     template: TemplateReferenceSchema,
     templateContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    briefing: BriefingProvenanceSchema,
     adaptedDraft: BuilderIntentDraftSchema,
+    draftContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    adaptationContentHash: z.string().regex(/^[a-f0-9]{64}$/),
     sanitizedAdaptationSummary: z.string().min(1),
   })
   .strict();
