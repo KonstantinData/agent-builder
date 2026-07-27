@@ -20,3 +20,9 @@ The Builder recomputes the canonical Spec content hash before packaging. ZIP
 verification reparses the embedded Spec and recomputes that same hash before
 accepting its manifest subject. A declared but stale or forged content hash is
 therefore rejected at both trust boundaries.
+
+Approval and evaluation are also one closed evidence pair: the approval embeds
+the exact evaluation it was decided against, and the package verifier reparses
+both embedded artifacts to require identical subject bindings and identical
+evaluation evidence. Delivery readiness rejects caller-supplied evidence that
+does not exactly match the verified package bytes.

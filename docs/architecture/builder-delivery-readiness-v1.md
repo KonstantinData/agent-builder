@@ -11,6 +11,9 @@ audit. The gate rejects malformed ZIP structures, duplicate or missing entries,
 CRC failures, or a manifest that does not match extracted artifact bytes.
 It also recomputes the canonical content hash of both the supplied Spec and the
 embedded package Spec, rejecting a declared hash that does not match content.
+It additionally compares the verified embedded approval and evaluation with
+the evidence supplied to the gate, preventing approval replay or evidence
+replacement after packaging.
 
 The result never deploys, uploads, selects a target, changes a customer agent,
 or authorises server access. It is a narrow statement that the exact ZIP is

@@ -41,4 +41,9 @@ describe("Builder delivery readiness", () => {
     const forgedPackage = forgePackageWithStaleSpecHash({ spec: validAgentSpecContent, approval, evaluation });
     expect(evaluateDeliveryReadiness({ ...input, package: forgedPackage })).toMatchObject({ ready: false, reasons: expect.arrayContaining(["package_integrity_invalid"]) });
   });
+  it("fails closed when caller-supplied approval evidence differs from the signed package evidence", () => {
+    const replayedEvaluation = { ...evaluation, evidenceId: "evidence-replayed" };
+    const replayedApproval = { ...approval, evidence: { ...approval.evidence, evaluationRef: replayedEvaluation } };
+    expect(evaluateDeliveryReadiness({ ...input, approval: replayedApproval, evaluation: replayedEvaluation })).toMatchObject({ ready: false, reasons: expect.arrayContaining(["approval_evaluation_invalid"]) });
+  });
 });

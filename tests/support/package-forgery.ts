@@ -22,3 +22,16 @@ export function forgePackageWithStaleSpecHash(input: { readonly spec: AgentSpecC
   const bytes = zip([...artifacts, { path: "manifest.json", bytes: encoder.encode(JSON.stringify(manifest, null, 2) + "\n") }]);
   return { fileName: `${input.spec.specId}-${input.spec.version}.zip`, bytes, sha256: sha256(bytes), manifest };
 }
+
+/** Creates a structurally valid ZIP whose embedded approval references a different evaluation than the embedded evaluation artifact. */
+export function forgePackageWithMismatchedEmbeddedEvidence(input: { readonly spec: AgentSpecContent; readonly approval: { readonly evidence: { readonly evaluationRef?: unknown } }; readonly evaluation: { readonly evidenceId: string } }): AgentPackage {
+  const approval = { ...input.approval, evidence: { ...input.approval.evidence, evaluationRef: { ...input.evaluation, evidenceId: `${input.evaluation.evidenceId}-replayed` } } };
+  const artifacts = [
+    { path: "agent-spec.json", bytes: encoder.encode(JSON.stringify(input.spec, null, 2) + "\n") },
+    { path: "approval.json", bytes: encoder.encode(JSON.stringify(approval, null, 2) + "\n") },
+    { path: "evaluation.json", bytes: encoder.encode(JSON.stringify(input.evaluation, null, 2) + "\n") },
+  ] as const;
+  const manifest = { schemaVersion: "agent-package-manifest/1" as const, specId: input.spec.specId, version: input.spec.version, contentHash: input.spec.contentHash, files: artifacts.map((artifact) => ({ path: artifact.path, sha256: sha256(artifact.bytes) })) };
+  const bytes = zip([...artifacts, { path: "manifest.json", bytes: encoder.encode(JSON.stringify(manifest, null, 2) + "\n") }]);
+  return { fileName: `${input.spec.specId}-${input.spec.version}.zip`, bytes, sha256: sha256(bytes), manifest };
+}
