@@ -5,6 +5,7 @@ import { evaluationFor, validAgentSpecContent } from "../fixtures/specs.js";
 import { AgentTemplateSchema } from "../../src/schema/agent-template.js";
 import { computeTemplateContentHash } from "../../src/template/template-governance.js";
 import { answerGuidedBriefing, completeGuidedBriefing, startGuidedBriefing } from "../../src/briefing/guided-briefing.js";
+import { forgePackageWithStaleSpecHash } from "../support/package-forgery.js";
 
 const topics = ["workflow_and_outcome", "required_information", "allowed_systems", "decision_boundaries", "output_and_tone", "tests_and_acceptance"] as const;
 const briefingSigner = { sign: (digest: string) => `trusted:${digest}`, verify: (digest: string, signature: string) => signature === `trusted:${digest}` };
@@ -31,5 +32,13 @@ describe("Builder delivery readiness", () => {
   it("rejects a ZIP-byte exchange even when caller metadata is unchanged", () => {
     const bytes = packageValue.bytes.slice(); bytes[50]! ^= 1;
     expect(evaluateDeliveryReadiness({ ...input, package: { ...packageValue, bytes } })).toMatchObject({ ready: false, reasons: expect.arrayContaining(["package_integrity_invalid"]) });
+  });
+  it("fails closed when the supplied Spec content differs from its declared hash", () => {
+    const forgedSpec = { ...validAgentSpecContent, objective: "Modified objective while retaining the declared hash." };
+    expect(evaluateDeliveryReadiness({ ...input, spec: forgedSpec })).toMatchObject({ ready: false, reasons: expect.arrayContaining(["spec_content_hash_invalid"]) });
+  });
+  it("fails closed when ZIP evidence carries a structurally consistent but stale embedded Spec hash", () => {
+    const forgedPackage = forgePackageWithStaleSpecHash({ spec: validAgentSpecContent, approval, evaluation });
+    expect(evaluateDeliveryReadiness({ ...input, package: forgedPackage })).toMatchObject({ ready: false, reasons: expect.arrayContaining(["package_integrity_invalid"]) });
   });
 });
