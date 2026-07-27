@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { AgentSpecApprovalSchema } from "../schema/approval-artifact.js";
 import { AgentSpecContentSchema } from "../schema/agent-spec-content.js";
 import { EvaluationOutcomeSchema } from "../schema/evaluation-outcome.js";
+import { contentHashMatches } from "../assembler/content-hash.js";
 
 const encoder = new TextEncoder();
 const requiredPaths = ["agent-spec.json", "approval.json", "evaluation.json"] as const;
@@ -30,6 +31,7 @@ function prohibited(value: unknown): boolean { return /(-----begin .*private key
 /** Builds a deterministic ZIP in memory; no repository write or deployment occurs. */
 export function buildAgentPackage(input: AgentPackageInput): AgentPackage {
   const spec = AgentSpecContentSchema.parse(input.spec); const approval = AgentSpecApprovalSchema.parse(input.approval); const evaluation = EvaluationOutcomeSchema.parse(input.evaluation);
+  if (!contentHashMatches(spec)) throw new TypeError("spec content hash does not match its content");
   if (approval.decision !== "approved" || approval.specId !== spec.specId || approval.version !== spec.version || approval.contentHash !== spec.contentHash) throw new TypeError("approval does not bind this exact spec");
   if (evaluation.subject.specId !== spec.specId || evaluation.subject.version !== spec.version || evaluation.subject.contentHash !== spec.contentHash) throw new TypeError("evaluation does not bind this exact spec");
   if (prohibited({ spec, approval, evaluation })) throw new TypeError("package contains prohibited customer or credential material");
@@ -87,6 +89,8 @@ export function verifyAgentPackageBytes(bytes: Uint8Array): PackageByteVerificat
     if (manifest.schemaVersion !== "agent-package-manifest/1" || typeof manifest.specId !== "string" || typeof manifest.version !== "string" || typeof manifest.contentHash !== "string" || !Array.isArray(manifest.files) || manifest.files.length !== requiredPaths.length) return { success: false, reason: "invalid_embedded_manifest" };
     const listed = new Map(manifest.files.map((file) => [file.path, file.sha256]));
     if (listed.size !== requiredPaths.length || requiredPaths.some((path) => listed.get(path) !== digest(files.get(path)!))) return { success: false, reason: "artifact_digest_mismatch" };
+    const embeddedSpec = AgentSpecContentSchema.safeParse(JSON.parse(new TextDecoder().decode(files.get("agent-spec.json")!)));
+    if (!embeddedSpec.success || !contentHashMatches(embeddedSpec.data) || manifest.contentHash !== embeddedSpec.data.contentHash) return { success: false, reason: "embedded_spec_content_hash_mismatch" };
     return { success: true, manifest, artifacts: Object.fromEntries(requiredPaths.map((path) => [path, files.get(path)!])) as Record<(typeof requiredPaths)[number], Uint8Array> };
   } catch { return { success: false, reason: "invalid_zip_or_manifest" }; }
 }

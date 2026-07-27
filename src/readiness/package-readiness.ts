@@ -6,6 +6,7 @@ import { AgentSpecContentSchema } from "../schema/agent-spec-content.js";
 import { EvaluationOutcomeSchema } from "../schema/evaluation-outcome.js";
 import { checkEvaluationOutcome } from "../harness/evaluation-check.js";
 import { createHash } from "node:crypto";
+import { contentHashMatches } from "../assembler/content-hash.js";
 
 export type DeliveryReadinessReason =
   | "briefing_incomplete"
@@ -16,6 +17,7 @@ export type DeliveryReadinessReason =
   | "briefing_adaptation_unbound"
   | "template_adaptation_invalid"
   | "approval_evaluation_invalid"
+  | "spec_content_hash_invalid"
   | "package_integrity_invalid";
 
 export interface BuilderSecurityEvidence {
@@ -56,6 +58,7 @@ export function evaluateDeliveryReadiness(input: DeliveryReadinessInput): Delive
   const spec = AgentSpecContentSchema.safeParse(input.spec);
   const approval = AgentSpecApprovalSchema.safeParse(input.approval);
   const evaluation = EvaluationOutcomeSchema.safeParse(input.evaluation);
+  if (spec.success && !contentHashMatches(spec.data)) reasons.push("spec_content_hash_invalid");
   if (!spec.success || !approval.success || !evaluation.success || approval.success && evaluation.success && spec.success && (
     approval.data.decision !== "approved" || approval.data.specId !== spec.data.specId || approval.data.version !== spec.data.version || approval.data.contentHash !== spec.data.contentHash ||
     evaluation.data.subject.specId !== spec.data.specId || evaluation.data.subject.version !== spec.data.version || evaluation.data.subject.contentHash !== spec.data.contentHash ||
