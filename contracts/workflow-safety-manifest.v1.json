@@ -3,12 +3,12 @@
   "workflows": [
     {
       "path": ".github/workflows/ci.yml",
-      "blobSha256": "a42a71959f776d336bd4d999d20eec3538a130f8",
+      "blobSha256": "a94ed65c97c15a1845d1547e616a2bbbe90672b1a2f1b7ca6a23f44892060a16",
       "classification": "verification_only",
       "requiredChecks": [
         "verify"
       ]
     }
   ],
-  "manifestDigest": "76dfbda0953938df23ea41791c9b39b1fdc00949038dde6b2ff5b3c931db0c63"
+  "manifestDigest": "3a5e69446f5000f0b26059debaa7f382f5ea3c5db7eda7e15d7613131424c4f1"
 }
