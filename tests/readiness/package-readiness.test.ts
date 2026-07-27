@@ -25,4 +25,8 @@ describe("Builder delivery readiness", () => {
     expect(evaluateDeliveryReadiness({ ...input, security: { ...security, dependencyAuditPassed: false } })).toMatchObject({ ready: false, reasons: expect.arrayContaining(["security_evidence_failed"]) });
     expect(evaluateDeliveryReadiness({ ...input, adaptation: { ...adaptation, templateContentHash: "0".repeat(64) } })).toMatchObject({ ready: false, reasons: expect.arrayContaining(["template_adaptation_invalid"]) });
   });
+  it("rejects a ZIP-byte exchange even when caller metadata is unchanged", () => {
+    const bytes = packageValue.bytes.slice(); bytes[50]! ^= 1;
+    expect(evaluateDeliveryReadiness({ ...input, package: { ...packageValue, bytes } })).toMatchObject({ ready: false, reasons: expect.arrayContaining(["package_integrity_invalid"]) });
+  });
 });

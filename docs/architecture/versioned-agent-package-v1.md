@@ -9,4 +9,9 @@ not write a customer package into this repository, select a server, or deploy.
 
 The function rejects evidence not bound to the same `{specId, version,
 contentHash}` and rejects known credential or customer-configuration markers.
-The caller receives ZIP bytes plus digest for external delivery only.
+The caller receives ZIP bytes plus digest for external delivery only. Before a
+package can pass Builder readiness, the gate parses the actual ZIP bytes
+fail-closed: it validates local and central ZIP records, CRCs, the exact closed
+entry set, the embedded manifest, and every artifact SHA-256 digest. Metadata
+supplied beside the ZIP is checked against that embedded evidence and is never
+accepted as a substitute for it.

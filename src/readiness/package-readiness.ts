@@ -1,5 +1,5 @@
 import { evaluateGuidedBriefingReadiness } from "../briefing/guided-briefing.js";
-import { requiredPackageArtifactsPresent, type AgentPackage } from "../package/agent-package.js";
+import { requiredPackageArtifactsPresent, verifyAgentPackageBytes, type AgentPackage } from "../package/agent-package.js";
 import { validateTemplateAdaptation } from "../template/template-governance.js";
 import { AgentSpecApprovalSchema } from "../schema/approval-artifact.js";
 import { AgentSpecContentSchema } from "../schema/agent-spec-content.js";
@@ -61,9 +61,10 @@ export function evaluateDeliveryReadiness(input: DeliveryReadinessInput): Delive
     checkEvaluationOutcome(spec.data, evaluation.data).length > 0 || approval.data.evidence.policyOutcome !== "approved_pending_gate" || approval.data.evidence.evaluationRef?.evidenceId !== evaluation.data.evidenceId ||
     !adaptation.success || adaptation.value.adaptationId !== input.briefingBinding.adaptationId || adaptation.value.adaptedDraft.draftId !== input.briefingBinding.draftId || adaptation.value.adaptedDraft.specId !== spec.data.specId
   )) reasons.push("approval_evaluation_invalid");
-  if (!requiredPackageArtifactsPresent(input.package.manifest)) reasons.push("package_artifacts_incomplete");
+  const verifiedPackage = verifyAgentPackageBytes(input.package.bytes);
+  if (!verifiedPackage.success || !requiredPackageArtifactsPresent(input.package.manifest) || !requiredPackageArtifactsPresent(verifiedPackage.success ? verifiedPackage.manifest : input.package.manifest)) reasons.push("package_artifacts_incomplete");
   if (!spec.success || input.package.manifest.specId !== spec.data.specId || input.package.manifest.version !== spec.data.version || input.package.manifest.contentHash !== spec.data.contentHash || input.package.fileName !== `${input.package.manifest.specId}-${input.package.manifest.version}.zip`) reasons.push("package_subject_mismatch");
-  if (createHash("sha256").update(input.package.bytes).digest("hex") !== input.package.sha256 || input.package.manifest.files.some((file) => !/^[a-f0-9]{64}$/.test(file.sha256))) reasons.push("package_integrity_invalid");
+  if (!verifiedPackage.success || createHash("sha256").update(input.package.bytes).digest("hex") !== input.package.sha256 || JSON.stringify(verifiedPackage.success ? verifiedPackage.manifest : undefined) !== JSON.stringify(input.package.manifest)) reasons.push("package_integrity_invalid");
   if (input.security === undefined) reasons.push("security_evidence_missing");
   else if (!input.security.baselinePassed || !input.security.dependencyAuditPassed || !/^[0-9a-f]{40}$/i.test(input.security.commitSha) || !/^https:\/\//.test(input.security.ciRunUrl)) reasons.push("security_evidence_failed");
   return reasons.length === 0 && input.security !== undefined ? { ready: true, package: input.package, evidence: input.security } : { ready: false, reasons };
