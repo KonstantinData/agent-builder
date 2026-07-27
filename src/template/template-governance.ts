@@ -17,6 +17,29 @@ export function computeTemplateContentHash(template: Omit<AgentTemplate, "conten
   return createHash("sha256").update(JSON.stringify(canonicalize(template))).digest("hex");
 }
 
+export function computeBuilderIntentDraftContentHash(draft: unknown): string {
+  const value = draft as { provenance?: Record<string, unknown> };
+  const provenance = value.provenance;
+  const hashable = provenance === undefined
+    ? draft
+    : { ...value, provenance: Object.fromEntries(Object.entries(provenance).filter(([key]) => key !== "adaptationContentHash")) };
+  return createHash("sha256").update(JSON.stringify(canonicalize(hashable))).digest("hex");
+}
+
+export function computeTemplateAdaptationContentHash(
+  adaptation: Omit<TemplateAdaptation, "adaptationContentHash">,
+): string {
+  const material = {
+    adaptationId: adaptation.adaptationId,
+    template: adaptation.template,
+    templateContentHash: adaptation.templateContentHash,
+    briefing: adaptation.briefing,
+    draftContentHash: adaptation.draftContentHash,
+    sanitizedAdaptationSummary: adaptation.sanitizedAdaptationSummary,
+  };
+  return createHash("sha256").update(JSON.stringify(canonicalize(material))).digest("hex");
+}
+
 /**
  * Selects an immutable template for a one-off draft. The returned adaptation
  * has no customer runtime identity and cannot update a delivered package.
@@ -40,6 +63,23 @@ export function validateTemplateAdaptation(
     adaptation.data.templateContentHash !== contentHash
   ) {
     return { success: false, reason: "template_reference_mismatch" };
+  }
+  if (adaptation.data.draftContentHash !== computeBuilderIntentDraftContentHash(adaptation.data.adaptedDraft)) {
+    return { success: false, reason: "draft_content_hash_mismatch" };
+  }
+  const { adaptationContentHash, ...hashableAdaptation } = adaptation.data;
+  if (adaptationContentHash !== computeTemplateAdaptationContentHash(hashableAdaptation)) {
+    return { success: false, reason: "adaptation_content_hash_mismatch" };
+  }
+  if (
+    adaptation.data.adaptedDraft.provenance.adaptationId !== adaptation.data.adaptationId ||
+    adaptation.data.adaptedDraft.provenance.adaptationContentHash !== adaptation.data.adaptationContentHash ||
+    adaptation.data.adaptedDraft.provenance.draftId !== adaptation.data.adaptedDraft.draftId ||
+    adaptation.data.adaptedDraft.provenance.briefingId !== adaptation.data.briefing.briefingId ||
+    adaptation.data.adaptedDraft.provenance.flowDigest !== adaptation.data.briefing.flowDigest ||
+    adaptation.data.adaptedDraft.provenance.planInputDigest !== adaptation.data.briefing.planInputDigest
+  ) {
+    return { success: false, reason: "briefing_provenance_mismatch" };
   }
   return { success: true, value: adaptation.data };
 }

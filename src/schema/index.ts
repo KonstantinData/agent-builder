@@ -1,5 +1,6 @@
 export * from "./common.js";
 export * from "./builder-intent-draft.js";
+export * from "./briefing-provenance.js";
 export * from "./guided-briefing.js";
 export * from "./agent-template.js";
 export * from "./agent-spec-content.js";

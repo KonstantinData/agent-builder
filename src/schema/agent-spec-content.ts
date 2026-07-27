@@ -10,6 +10,7 @@ import {
   type SpecId,
   type TrustDomainId,
 } from "./common.js";
+import { SpecProvenanceSchema, type SpecProvenance } from "./briefing-provenance.js";
 
 /**
  * Resolved-only agent-to-agent call declaration. There is no `calleeRole`
@@ -65,6 +66,7 @@ export const AgentSpecContentSchema = z
     memoryScope: NoWildcardStringSchema,
     trustDomainId: TrustDomainIdSchema,
     declaredRoles: z.array(NoWildcardStringSchema).min(1),
+    provenance: SpecProvenanceSchema,
   })
   .strict();
 
@@ -88,6 +90,7 @@ export interface AgentSpecContent {
   readonly memoryScope: string;
   readonly trustDomainId: TrustDomainId;
   readonly declaredRoles: ReadonlyArray<string>;
+  readonly provenance: SpecProvenance;
 }
 
 // Compile-time guarantee that schema output and the readonly interface never

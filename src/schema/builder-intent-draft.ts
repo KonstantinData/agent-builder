@@ -7,6 +7,7 @@ import {
   TrustDomainIdSchema,
 } from "./common.js";
 import { DeclaredToolSchema, EvalRequirementsSchema } from "./agent-spec-content.js";
+import { DraftProvenanceSchema } from "./briefing-provenance.js";
 
 /**
  * Pre-hash, non-executable request for an agent-to-agent call. Only
@@ -48,6 +49,7 @@ export const BuilderIntentDraftSchema = z
     memoryScope: NoWildcardStringSchema,
     trustDomainId: TrustDomainIdSchema,
     requestedAgentCalls: z.array(RequestedAgentCallSchema),
+    provenance: DraftProvenanceSchema,
   })
   .strict();
 export type BuilderIntentDraft = z.infer<typeof BuilderIntentDraftSchema>;

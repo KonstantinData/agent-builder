@@ -48,6 +48,15 @@ export const validAgentSpecContentRaw = {
   // Deliberately two roles, not one: lets tests exercise a pure addition and a
   // pure removal without ever violating declaredRoles' `.min(1)` floor.
   declaredRoles: ["crm-enrichment", "crm-lead-scoring"],
+  provenance: {
+    briefingId: "briefing-fixture-001",
+    flowDigest: "a".repeat(64),
+    planInputDigest: "b".repeat(64),
+    adaptationId: "adaptation-fixture-001",
+    adaptationContentHash: "c".repeat(64),
+    draftId: "draft-crm-enricher-001",
+    draftContentHash: "d".repeat(64),
+  },
 };
 
 const parsedValidAgentSpecWithPlaceholder = AgentSpecContentSchema.parse(validAgentSpecContentRaw);
@@ -167,6 +176,14 @@ export const validBuilderIntentDraftRaw = {
       rationale: "Needs live company data to enrich the lead record.",
     },
   ],
+  provenance: {
+    briefingId: "briefing-fixture-001",
+    flowDigest: "a".repeat(64),
+    planInputDigest: "b".repeat(64),
+    adaptationId: "adaptation-fixture-001",
+    adaptationContentHash: "c".repeat(64),
+    draftId: "draft-crm-enricher-001",
+  },
 };
 
 export const validBuilderIntentDraft: BuilderIntentDraft = BuilderIntentDraftSchema.parse(
