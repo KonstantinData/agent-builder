@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { AgentSpecApprovalSchema } from "../schema/approval-artifact.js";
 import { AgentSpecContentSchema } from "../schema/agent-spec-content.js";
 import { EvaluationOutcomeSchema } from "../schema/evaluation-outcome.js";
-import { contentHashMatches } from "../assembler/content-hash.js";
+import { canonicalize, contentHashMatches } from "../assembler/content-hash.js";
 
 const encoder = new TextEncoder();
 const requiredPaths = ["agent-spec.json", "approval.json", "evaluation.json"] as const;
@@ -19,6 +19,7 @@ function u32(value: number): Uint8Array { return Uint8Array.of(value & 255, valu
 function join(parts: readonly Uint8Array[]): Uint8Array { const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0)); let offset = 0; for (const part of parts) { result.set(part, offset); offset += part.length; } return result; }
 function digest(bytes: Uint8Array): string { return createHash("sha256").update(bytes).digest("hex"); }
 function json(value: unknown): Uint8Array { return encoder.encode(JSON.stringify(value, null, 2) + "\n"); }
+function sameJson(left: unknown, right: unknown): boolean { return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right)); }
 function readU16(bytes: Uint8Array, offset: number): number { return bytes[offset]! | bytes[offset + 1]! << 8; }
 function readU32(bytes: Uint8Array, offset: number): number { return (bytes[offset]! | bytes[offset + 1]! << 8 | bytes[offset + 2]! << 16 | bytes[offset + 3]! << 24) >>> 0; }
 function zip(files: readonly { readonly path: string; readonly bytes: Uint8Array }[]): Uint8Array {
@@ -32,7 +33,7 @@ function prohibited(value: unknown): boolean { return /(-----begin .*private key
 export function buildAgentPackage(input: AgentPackageInput): AgentPackage {
   const spec = AgentSpecContentSchema.parse(input.spec); const approval = AgentSpecApprovalSchema.parse(input.approval); const evaluation = EvaluationOutcomeSchema.parse(input.evaluation);
   if (!contentHashMatches(spec)) throw new TypeError("spec content hash does not match its content");
-  if (approval.decision !== "approved" || approval.specId !== spec.specId || approval.version !== spec.version || approval.contentHash !== spec.contentHash) throw new TypeError("approval does not bind this exact spec");
+  if (approval.decision !== "approved" || approval.specId !== spec.specId || approval.version !== spec.version || approval.contentHash !== spec.contentHash || !sameJson(approval.evidence.evaluationRef, evaluation)) throw new TypeError("approval does not bind this exact spec and evaluation");
   if (evaluation.subject.specId !== spec.specId || evaluation.subject.version !== spec.version || evaluation.subject.contentHash !== spec.contentHash) throw new TypeError("evaluation does not bind this exact spec");
   if (prohibited({ spec, approval, evaluation })) throw new TypeError("package contains prohibited customer or credential material");
   const artifacts = [{ path: "agent-spec.json", bytes: json(spec) }, { path: "approval.json", bytes: json(approval) }, { path: "evaluation.json", bytes: json(evaluation) }];
@@ -42,7 +43,7 @@ export function buildAgentPackage(input: AgentPackageInput): AgentPackage {
 export function requiredPackageArtifactsPresent(manifest: AgentPackage["manifest"]): boolean { return requiredPaths.every((path) => manifest.files.some((file) => file.path === path)); }
 
 export type PackageByteVerification =
-  | { readonly success: true; readonly manifest: AgentPackage["manifest"]; readonly artifacts: Readonly<Record<(typeof requiredPaths)[number], Uint8Array>> }
+  | { readonly success: true; readonly manifest: AgentPackage["manifest"]; readonly artifacts: Readonly<Record<(typeof requiredPaths)[number], Uint8Array>>; readonly spec: ReturnType<typeof AgentSpecContentSchema.parse>; readonly approval: ReturnType<typeof AgentSpecApprovalSchema.parse>; readonly evaluation: ReturnType<typeof EvaluationOutcomeSchema.parse> }
   | { readonly success: false; readonly reason: string };
 
 /**
@@ -91,6 +92,9 @@ export function verifyAgentPackageBytes(bytes: Uint8Array): PackageByteVerificat
     if (listed.size !== requiredPaths.length || requiredPaths.some((path) => listed.get(path) !== digest(files.get(path)!))) return { success: false, reason: "artifact_digest_mismatch" };
     const embeddedSpec = AgentSpecContentSchema.safeParse(JSON.parse(new TextDecoder().decode(files.get("agent-spec.json")!)));
     if (!embeddedSpec.success || !contentHashMatches(embeddedSpec.data) || manifest.contentHash !== embeddedSpec.data.contentHash) return { success: false, reason: "embedded_spec_content_hash_mismatch" };
-    return { success: true, manifest, artifacts: Object.fromEntries(requiredPaths.map((path) => [path, files.get(path)!])) as Record<(typeof requiredPaths)[number], Uint8Array> };
+    const embeddedApproval = AgentSpecApprovalSchema.safeParse(JSON.parse(new TextDecoder().decode(files.get("approval.json")!)));
+    const embeddedEvaluation = EvaluationOutcomeSchema.safeParse(JSON.parse(new TextDecoder().decode(files.get("evaluation.json")!)));
+    if (!embeddedApproval.success || !embeddedEvaluation.success || embeddedApproval.data.decision !== "approved" || embeddedApproval.data.specId !== embeddedSpec.data.specId || embeddedApproval.data.version !== embeddedSpec.data.version || embeddedApproval.data.contentHash !== embeddedSpec.data.contentHash || embeddedEvaluation.data.subject.specId !== embeddedSpec.data.specId || embeddedEvaluation.data.subject.version !== embeddedSpec.data.version || embeddedEvaluation.data.subject.contentHash !== embeddedSpec.data.contentHash || !sameJson(embeddedApproval.data.evidence.evaluationRef, embeddedEvaluation.data)) return { success: false, reason: "embedded_evidence_binding_mismatch" };
+    return { success: true, manifest, artifacts: Object.fromEntries(requiredPaths.map((path) => [path, files.get(path)!])) as Record<(typeof requiredPaths)[number], Uint8Array>, spec: embeddedSpec.data, approval: embeddedApproval.data, evaluation: embeddedEvaluation.data };
   } catch { return { success: false, reason: "invalid_zip_or_manifest" }; }
 }

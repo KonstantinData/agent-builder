@@ -6,7 +6,9 @@ import { AgentSpecContentSchema } from "../schema/agent-spec-content.js";
 import { EvaluationOutcomeSchema } from "../schema/evaluation-outcome.js";
 import { checkEvaluationOutcome } from "../harness/evaluation-check.js";
 import { createHash } from "node:crypto";
-import { contentHashMatches } from "../assembler/content-hash.js";
+import { canonicalize, contentHashMatches } from "../assembler/content-hash.js";
+
+const sameJson = (left: unknown, right: unknown) => JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
 
 export type DeliveryReadinessReason =
   | "briefing_incomplete"
@@ -62,10 +64,11 @@ export function evaluateDeliveryReadiness(input: DeliveryReadinessInput): Delive
   if (!spec.success || !approval.success || !evaluation.success || approval.success && evaluation.success && spec.success && (
     approval.data.decision !== "approved" || approval.data.specId !== spec.data.specId || approval.data.version !== spec.data.version || approval.data.contentHash !== spec.data.contentHash ||
     evaluation.data.subject.specId !== spec.data.specId || evaluation.data.subject.version !== spec.data.version || evaluation.data.subject.contentHash !== spec.data.contentHash ||
-    checkEvaluationOutcome(spec.data, evaluation.data).length > 0 || approval.data.evidence.policyOutcome !== "approved_pending_gate" || approval.data.evidence.evaluationRef?.evidenceId !== evaluation.data.evidenceId ||
+    checkEvaluationOutcome(spec.data, evaluation.data).length > 0 || approval.data.evidence.policyOutcome !== "approved_pending_gate" || !sameJson(approval.data.evidence.evaluationRef, evaluation.data) ||
     !adaptation.success || adaptation.value.adaptationId !== input.briefingBinding.adaptationId || adaptation.value.adaptedDraft.draftId !== input.briefingBinding.draftId || adaptation.value.adaptedDraft.specId !== spec.data.specId
   )) reasons.push("approval_evaluation_invalid");
   const verifiedPackage = verifyAgentPackageBytes(input.package.bytes);
+  if (!verifiedPackage.success || !approval.success || !evaluation.success || !sameJson(verifiedPackage.success ? verifiedPackage.approval : undefined, approval.success ? approval.data : undefined) || !sameJson(verifiedPackage.success ? verifiedPackage.evaluation : undefined, evaluation.success ? evaluation.data : undefined)) reasons.push("approval_evaluation_invalid");
   if (!verifiedPackage.success || !requiredPackageArtifactsPresent(input.package.manifest) || !requiredPackageArtifactsPresent(verifiedPackage.success ? verifiedPackage.manifest : input.package.manifest)) reasons.push("package_artifacts_incomplete");
   if (!spec.success || input.package.manifest.specId !== spec.data.specId || input.package.manifest.version !== spec.data.version || input.package.manifest.contentHash !== spec.data.contentHash || input.package.fileName !== `${input.package.manifest.specId}-${input.package.manifest.version}.zip`) reasons.push("package_subject_mismatch");
   if (!verifiedPackage.success || createHash("sha256").update(input.package.bytes).digest("hex") !== input.package.sha256 || JSON.stringify(verifiedPackage.success ? verifiedPackage.manifest : undefined) !== JSON.stringify(input.package.manifest)) reasons.push("package_integrity_invalid");
