@@ -53,6 +53,14 @@ approver identity before the pure gate receives it.
    evidence and lifecycle history. This is a content-bound description, not a started
    process, registry write, credential grant, tool invocation, or deployment.
 
+For delivery preparation, `composeBuilderDelivery` is the one executable
+Builder-side path. It validates the signed completed briefing and immutable
+template adaptation, assembles the Spec, obtains evaluation for that exact
+in-memory Spec, runs policy and the separately attested human gate, builds the
+ZIP from the gate-approved artifact, and verifies readiness against its
+embedded bytes. It does not accept externally supplied intermediate artifacts
+after those stages have begun, and it grants no deployment authority.
+
 At the Deployment Gate and Runtime Binding boundaries, the canonical content hash is
 recomputed from the full spec. Any mismatch blocks before an approval or binding can be
 emitted. This detects post-evaluation or post-approval content substitution; it does
