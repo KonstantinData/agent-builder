@@ -3,7 +3,7 @@ import { answerGuidedBriefing, completeGuidedBriefing, startGuidedBriefing } fro
 import { composeBuilderDelivery } from "../../src/delivery/builder-delivery.js";
 import type { BuilderDeliveryCompositionInput } from "../../src/delivery/builder-delivery.js";
 import type { AgentTemplate } from "../../src/schema/agent-template.js";
-import { computeTemplateContentHash } from "../../src/template/template-governance.js";
+import { computeBuilderIntentDraftContentHash, computeTemplateAdaptationContentHash, computeTemplateContentHash } from "../../src/template/template-governance.js";
 import { computeContentHash } from "../../src/assembler/content-hash.js";
 import { SpecIdSchema } from "../../src/schema/common.js";
 import { domainSales } from "../fixtures/specs.js";
@@ -15,16 +15,25 @@ const security = { commitSha: "a".repeat(40), ciRunUrl: "https://github.com/exam
 const deliverySpecId = SpecIdSchema.parse("spec-delivery-1");
 const templateWithoutHash: Omit<AgentTemplate, "contentHash"> = { templateId: "delivery-template", templateVersion: "1.0.0", intent: { name: "Delivery Agent", objective: "Create a safely evidenced delivery package", promptTemplate: "Produce a safe delivery plan.", declaredTools: [{ toolId: "crm.enrich", scope: "tenant:acme:crm", params: {} }], declaredRoles: ["crm-enrichment"], resourceLimits: { costCeiling: 5, maxIterations: 5, timeoutMs: 1000 }, evalRequirements: { suiteRef: "suite-delivery-v1", passThreshold: 0.9 }, memoryScope: "tenant:acme:crm", trustDomainId: domainSales.domainId, requestedAgentCalls: [] } };
 const template = { ...templateWithoutHash, contentHash: computeTemplateContentHash(templateWithoutHash) };
-const adaptation = { adaptationId: "adaptation-delivery-1", template: { templateId: template.templateId, templateVersion: template.templateVersion }, templateContentHash: template.contentHash, adaptedDraft: { ...template.intent, draftId: "draft-delivery-1", specId: deliverySpecId }, sanitizedAdaptationSummary: "Safe one-off adaptation." };
 
-function completedBriefing() {
-  let flow = startGuidedBriefing({ briefingId: "briefing-delivery-1", roughRequest: "Build a delivery agent for safe evidence.", signer, questionProvider: { questionsFor: ({ missingTopics }) => missingTopics.map((topic, index) => ({ question: { questionId: `q-${index}`, topic, prompt: `Question ${index}`, rationale: "delivery agent evidence" }, contextNeed: "delivery agent evidence" })) } });
+function completedBriefing(roughRequest = "Build a delivery agent for safe evidence.") {
+  let flow = startGuidedBriefing({ briefingId: "briefing-delivery-1", roughRequest, signer, questionProvider: { questionsFor: ({ missingTopics }) => missingTopics.map((topic, index) => ({ question: { questionId: `q-${index}`, topic, prompt: `Question ${index}`, rationale: "delivery agent evidence" }, contextNeed: "delivery agent evidence" })) } });
   for (const topic of topics) flow = answerGuidedBriefing(flow, { questionId: `q-${topics.indexOf(topic)}`, topic, sanitizedSummary: "Generic requirement.", sourceClassification: "generic_requirement" }, signer);
   return completeGuidedBriefing(flow, { planFor: ({ flowDigest }) => ({ planSummary: "Completed delivery plan.", flowDigest }) }, signer);
 }
 
+function adaptationFor(briefing: ReturnType<typeof completedBriefing>) {
+  const provenance = { briefingId: briefing.briefing.briefingId, flowDigest: briefing.flowDigest, planInputDigest: briefing.planInputDigest };
+  const draft = { ...template.intent, draftId: "draft-delivery-1", specId: deliverySpecId, provenance: { ...provenance, adaptationId: "adaptation-delivery-1", adaptationContentHash: "0".repeat(64), draftId: "draft-delivery-1" } };
+  const draftContentHash = computeBuilderIntentDraftContentHash(draft);
+  const hashable = { adaptationId: "adaptation-delivery-1", template: { templateId: template.templateId, templateVersion: template.templateVersion }, templateContentHash: template.contentHash, briefing: provenance, adaptedDraft: draft, draftContentHash, sanitizedAdaptationSummary: "Safe one-off adaptation." };
+  const adaptationContentHash = computeTemplateAdaptationContentHash(hashable);
+  return { ...hashable, adaptedDraft: { ...draft, provenance: { ...draft.provenance, adaptationContentHash } }, adaptationContentHash };
+}
+
 function input(overrides: Partial<BuilderDeliveryCompositionInput> = {}): BuilderDeliveryCompositionInput {
-  const base: BuilderDeliveryCompositionInput = { briefing: completedBriefing(), briefingSigner: signer, template, adaptation, assemblyContext: { approvedSpecs: [], trustDomains: [domainSales] }, policyContext: { approvedSpecs: [], trustDomains: [domainSales], forbiddenToolCombinations: [], evaluationReferenceTime: "2026-07-27T12:30:00+02:00" }, gateMetadata: { specId: adaptation.adaptedDraft.specId, version: "1", state: "in_review", stateHistory: [{ state: "draft", actor: "agent-builder", timestamp: "2026-07-27T11:00:00+02:00", reason: "Created." }, { state: "in_review", actor: "agent-builder", timestamp: "2026-07-27T11:30:00+02:00", reason: "Ready for review." }], requestor: "agent-builder" }, trustedDecision: { principal: makeTestPrincipal("konstantin"), decidedAt: "2026-07-27T12:01:00+02:00", artifactId: "approval-delivery-1" }, security, providers: { evaluate: (spec: any) => ({ evidenceId: "evaluation-delivery-1", subject: { specId: spec.specId, version: spec.version, contentHash: spec.contentHash }, suiteRef: spec.evalRequirements.suiteRef, score: 0.95, completedAt: "2026-07-27T12:00:00+02:00", environment: "disposable_mock", usedProductionData: false, usedProductionCredentials: false }) } };
+  const briefing = completedBriefing(); const adaptation = adaptationFor(briefing);
+  const base: BuilderDeliveryCompositionInput = { briefing, briefingSigner: signer, template, adaptation, assemblyContext: { approvedSpecs: [], trustDomains: [domainSales] }, policyContext: { approvedSpecs: [], trustDomains: [domainSales], forbiddenToolCombinations: [], evaluationReferenceTime: "2026-07-27T12:30:00+02:00" }, gateMetadata: { specId: adaptation.adaptedDraft.specId, version: "1", state: "in_review", stateHistory: [{ state: "draft", actor: "agent-builder", timestamp: "2026-07-27T11:00:00+02:00", reason: "Created." }, { state: "in_review", actor: "agent-builder", timestamp: "2026-07-27T11:30:00+02:00", reason: "Ready for review." }], requestor: "agent-builder" }, trustedDecision: { principal: makeTestPrincipal("konstantin"), decidedAt: "2026-07-27T12:01:00+02:00", artifactId: "approval-delivery-1" }, security, providers: { evaluate: (spec: any) => ({ evidenceId: "evaluation-delivery-1", subject: { specId: spec.specId, version: spec.version, contentHash: spec.contentHash }, suiteRef: spec.evalRequirements.suiteRef, score: 0.95, completedAt: "2026-07-27T12:00:00+02:00", environment: "disposable_mock", usedProductionData: false, usedProductionCredentials: false }) } };
   return { ...base, ...overrides };
 }
 
@@ -62,6 +71,13 @@ describe("Builder delivery composition", () => {
     const evaluate = vi.fn(input().providers.evaluate);
     const result = composeBuilderDelivery(input({ briefing: { ...completedBriefing(), signature: "forged" }, providers: { evaluate } }));
     expect(result).toEqual({ ready: false, stage: "briefing", reasons: ["briefing_incomplete"] });
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
+  it("blocks a valid adaptation from another signed briefing before evaluation", () => {
+    const evaluate = vi.fn(input().providers.evaluate); const foreignBriefing = completedBriefing("Build a different delivery agent for safe evidence.");
+    const result = composeBuilderDelivery(input({ adaptation: adaptationFor(foreignBriefing), providers: { evaluate } }));
+    expect(result).toEqual({ ready: false, stage: "adaptation", reasons: ["briefing_provenance_mismatch"] });
     expect(evaluate).not.toHaveBeenCalled();
   });
 });

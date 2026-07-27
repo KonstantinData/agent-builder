@@ -58,6 +58,11 @@ export function composeBuilderDelivery(input: BuilderDeliveryCompositionInput): 
 
   const adaptation = validateTemplateAdaptation(input.template, input.adaptation);
   if (!adaptation.success) return { ready: false, stage: "adaptation", reasons: [adaptation.reason] };
+  if (
+    adaptation.value.briefing.briefingId !== briefing.briefing.briefingId ||
+    adaptation.value.briefing.flowDigest !== (input.briefing as { flowDigest?: unknown }).flowDigest ||
+    adaptation.value.briefing.planInputDigest !== (input.briefing as { planInputDigest?: unknown }).planInputDigest
+  ) return { ready: false, stage: "adaptation", reasons: ["briefing_provenance_mismatch"] };
 
   const assembly = assembleSpec(adaptation.value.adaptedDraft, input.assemblyContext);
   if (!assembly.success) {
