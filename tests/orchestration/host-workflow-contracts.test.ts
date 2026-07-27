@@ -42,7 +42,7 @@ const HEAD_SHA = "1234567890abcdef1234567890abcdef12345678";
 const DIGEST_A = "a".repeat(64);
 const DIGEST_B = "b".repeat(64);
 const DIGEST_C = "c".repeat(64);
-const WORKFLOW_SHA256 = "21f31de2e3f81260aad6b1b5f87b515f50b45008a4b2cc934c249c28d3a59cbe";
+const WORKFLOW_SHA256 = "a94ed65c97c15a1845d1547e616a2bbbe90672b1a2f1b7ca6a23f44892060a16";
 
 function intentInput() {
   return {
@@ -178,7 +178,7 @@ describe("workflow safety manifest and repository paths", () => {
       schemaVersion: "workflow-safety-manifest/1",
       workflows: value.workflows,
     })).toBe(value.manifestDigest);
-    expect(value.manifestDigest).toBe("cf76aa31ea735049165136709028f69e07c82b80c1ee3eb40a0078ef61e8553d");
+    expect(value.manifestDigest).toBe("3a5e69446f5000f0b26059debaa7f382f5ea3c5db7eda7e15d7613131424c4f1");
     expect(WorkflowSafetyManifestV1Schema.parse(value).workflows).toEqual([{
       path: ".github/workflows/ci.yml",
       blobSha256: WORKFLOW_SHA256,

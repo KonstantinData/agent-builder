@@ -57,7 +57,7 @@ lifecycle transition.
 
 The only recognized repository workflow is `.github/workflows/ci.yml`, pinned by its
 exact SHA-256 digest
-`21f31de2e3f81260aad6b1b5f87b515f50b45008a4b2cc934c249c28d3a59cbe`.
+`a94ed65c97c15a1845d1547e616a2bbbe90672b1a2f1b7ca6a23f44892060a16`.
 The digest is computed over the Git blob bytes, not a platform-translated working-tree
 copy, so Windows CRLF checkout settings cannot change the locked evidence.
 It is classified as `verification_only` and contributes exactly one required check:
