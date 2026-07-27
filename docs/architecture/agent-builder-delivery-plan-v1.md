@@ -62,6 +62,11 @@ document is the stable repository delivery plan.
    Combine the earlier evidence into one repeatable release decision. Only this package
    may mark a ZIP as ready for delivery.
 
+The implementation entry point for the sequence is `composeBuilderDelivery`.
+It retains the exact outputs from briefing validation, immutable adaptation,
+assembly, evaluation, policy, human gate, package construction, and readiness;
+it never re-accepts a caller-substituted intermediate artifact.
+
 The legal follow-up remains separately tracked in
 [Issues & Open Questions](https://app.notion.com/p/3a91c1ac5ec081428472cbdd3533cd36).
 
