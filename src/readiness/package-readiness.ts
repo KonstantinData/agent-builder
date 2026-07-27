@@ -1,4 +1,4 @@
-import { evaluateGuidedBriefingReadiness } from "../briefing/guided-briefing.js";
+import { evaluateCompletedGuidedBriefingFlowReadiness, type FlowSigner } from "../briefing/guided-briefing.js";
 import { requiredPackageArtifactsPresent, verifyAgentPackageBytes, type AgentPackage } from "../package/agent-package.js";
 import { validateTemplateAdaptation } from "../template/template-governance.js";
 import { AgentSpecApprovalSchema } from "../schema/approval-artifact.js";
@@ -27,6 +27,7 @@ export interface BuilderSecurityEvidence {
 
 export interface DeliveryReadinessInput {
   readonly briefing: unknown;
+  readonly briefingSigner: FlowSigner;
   readonly briefingBinding: { readonly briefingId: string; readonly adaptationId: string; readonly draftId: string };
   readonly template: unknown;
   readonly adaptation: unknown;
@@ -47,7 +48,7 @@ export type DeliveryReadinessResult =
  */
 export function evaluateDeliveryReadiness(input: DeliveryReadinessInput): DeliveryReadinessResult {
   const reasons: DeliveryReadinessReason[] = [];
-  const briefing = evaluateGuidedBriefingReadiness(input.briefing);
+  const briefing = evaluateCompletedGuidedBriefingFlowReadiness(input.briefing, input.briefingSigner);
   if (!briefing.ready) reasons.push("briefing_incomplete");
   else if (briefing.briefing.briefingId !== input.briefingBinding.briefingId) reasons.push("briefing_adaptation_unbound");
   const adaptation = validateTemplateAdaptation(input.template, input.adaptation);
