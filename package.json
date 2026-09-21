@@ -14,7 +14,7 @@
     "security:baseline": "node scripts/check-security-baseline.mjs"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
